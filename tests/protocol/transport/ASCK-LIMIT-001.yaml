@@ -1,0 +1,14 @@
+id: ASCK-LIMIT-001
+title: Oversized request payload is rejected
+aisvs: ["10.4.5"]
+risks: []
+level: 2
+requires: [principal:reader]
+steps:
+  - name: 8 MB request body
+    as: reader
+    pad_bytes: 8000000
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}}}
+    expect:
+      blocked: true
+      canary_not_called: [search_docs]

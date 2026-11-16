@@ -1,0 +1,16 @@
+id: ASCK-AUTH-004
+title: Token issued for another service is rejected
+aisvs: ["10.2.2", "10.2.7"]
+risks: [ASI03, MCP01]
+level: 1
+requires: [jwt, principal:reader]
+rationale: >
+  A token whose audience names a different service must not be accepted,
+  otherwise tokens leaked from any other API work here too.
+steps:
+  - name: wrong audience
+    as: reader:wrong_audience
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}}}
+    expect:
+      blocked: true
+      canary_not_called: [search_docs]

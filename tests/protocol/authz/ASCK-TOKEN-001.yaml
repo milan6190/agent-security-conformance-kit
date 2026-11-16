@@ -1,0 +1,18 @@
+id: ASCK-TOKEN-001
+title: Client token is not passed through to the upstream server
+aisvs: ["10.2.7"]
+risks: [ASI03, MCP01]
+level: 1
+requires: [principal:reader]
+rationale: >
+  Token passthrough turns the MCP server into a confused deputy and leaks the
+  caller's credential downstream. The upstream must see the intermediary's own
+  credential, never the client's.
+steps:
+  - name: reader calls search_docs
+    as: reader
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}}}
+    expect:
+      allowed: true
+      canary_called: [search_docs]
+      canary_auth_not_client_token: true

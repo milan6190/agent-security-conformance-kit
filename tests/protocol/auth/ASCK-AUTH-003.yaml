@@ -1,0 +1,13 @@
+id: ASCK-AUTH-003
+title: Expired token is rejected
+aisvs: ["10.2.2"]
+risks: [ASI03, MCP07]
+level: 1
+requires: [jwt, principal:reader]
+steps:
+  - name: token expired one hour ago
+    as: reader:expired
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}}}
+    expect:
+      blocked: true
+      canary_not_called: [search_docs]

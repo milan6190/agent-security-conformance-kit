@@ -1,0 +1,14 @@
+# Known-bad reference target: a pass-through proxy with no controls.
+# Expected result: every test except the control test (ASCK-AUTHZ-003) fails.
+#   go run ./cmd/naive-proxy -listen 127.0.0.1:8081 -upstream http://127.0.0.1:9901/mcp &
+#   go run ./cmd/asck run -target targets/naive-proxy/target.yaml -tests tests
+name: naive-proxy
+endpoint: http://127.0.0.1:8081/mcp
+canary_listen: 127.0.0.1:9901
+jwt:
+  secret_env: ASCK_JWT_SECRET
+  issuer: https://idp.asck.invalid
+  audience: naive-proxy
+principals:
+  reader: {claims: {sub: asck-reader, roles: [reader]}}
+  admin: {claims: {sub: asck-admin, roles: [admin]}}

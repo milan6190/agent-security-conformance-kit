@@ -1,0 +1,16 @@
+id: ASCK-AUTHZ-003
+title: Authorized tool call still works (control)
+aisvs: ["10.2.5"]
+risks: [ASI02]
+level: 2
+requires: [principal:reader]
+rationale: >
+  Control test. A target that blocks everything would pass the deny tests;
+  this proves allowed calls reach the tool.
+steps:
+  - name: reader calls search_docs
+    as: reader
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}}}
+    expect:
+      allowed: true
+      canary_called: [search_docs]

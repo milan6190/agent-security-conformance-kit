@@ -1,0 +1,25 @@
+{
+  "listen": "127.0.0.1:8080",
+  "upstream": { "url": "http://127.0.0.1:9901/mcp", "auth_header_env": "MCP_UPSTREAM_AUTH" },
+  "auth": {
+    "jwt_secret_env": "ASCK_JWT_SECRET",
+    "issuer": "https://idp.asck.invalid",
+    "audience": "reference-gateway",
+    "roles_claim": "roles",
+    "clock_skew": "30s"
+  },
+  "policy": {
+    "rules": [
+      { "role": "reader", "allow_tools": ["search_docs", "read_file"] },
+      { "role": "admin", "allow_tools": ["*"] }
+    ]
+  },
+  "redaction": { "detectors": ["all"], "requests": true, "responses": true },
+  "limits": { "max_body_bytes": 1048576, "rate_per_minute": 0 },
+  "hardening": {
+    "allowed_origins": ["http://localhost:8080"],
+    "allowed_hosts": ["127.0.0.1:8080", "localhost:8080"],
+    "screen_injection": true,
+    "pin_tools": true
+  }
+}

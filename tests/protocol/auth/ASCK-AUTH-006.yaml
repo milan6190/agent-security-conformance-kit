@@ -1,0 +1,19 @@
+id: ASCK-AUTH-006
+title: Forged tokens (bad signature, alg none) are rejected
+aisvs: ["10.2.1"]
+risks: [ASI03]
+level: 1
+requires: [jwt, principal:admin]
+steps:
+  - name: signed with the wrong key
+    as: admin:bad_signature
+    rpc: {method: tools/call, params: {name: admin_reset, arguments: {scope: all}}}
+    expect:
+      blocked: true
+      canary_not_called: [admin_reset]
+  - name: unsigned token (alg none)
+    as: admin:alg_none
+    rpc: {method: tools/call, params: {name: admin_reset, arguments: {scope: all}}}
+    expect:
+      blocked: true
+      canary_not_called: [admin_reset]

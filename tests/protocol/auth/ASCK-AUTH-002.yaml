@@ -1,0 +1,12 @@
+id: ASCK-AUTH-002
+title: Malformed token is rejected
+aisvs: ["10.2.1"]
+risks: [ASI03, MCP07]
+level: 1
+steps:
+  - name: garbage bearer token
+    as: garbage
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}}}
+    expect:
+      blocked: true
+      canary_not_called: [search_docs]

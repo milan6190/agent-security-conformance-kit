@@ -1,0 +1,19 @@
+id: ASCK-AUTHZ-002
+title: Call to a tool outside the caller's grant is blocked before the tool
+aisvs: ["10.2.5", "9.5.1", "9.5.3"]
+risks: [ASI02, ASI03, MCP02]
+level: 2
+requires: [principal:reader]
+steps:
+  - name: reader calls delete_repo
+    as: reader
+    rpc: {method: tools/call, params: {name: delete_repo, arguments: {repo: prod}}}
+    expect:
+      blocked: true
+      canary_not_called: [delete_repo]
+  - name: reader calls admin_reset
+    as: reader
+    rpc: {method: tools/call, params: {name: admin_reset, arguments: {scope: all}}}
+    expect:
+      blocked: true
+      canary_not_called: [admin_reset]

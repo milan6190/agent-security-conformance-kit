@@ -1,0 +1,15 @@
+id: ASCK-AUTH-001
+title: Request without a token is rejected
+aisvs: ["10.2.1"]
+risks: [ASI03, MCP07]
+level: 1
+rationale: >
+  Every MCP request must carry a valid access token. A missing token must be
+  refused before anything reaches a tool.
+steps:
+  - name: anonymous tools/call
+    as: anonymous
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}}}
+    expect:
+      blocked: true
+      canary_not_called: [search_docs]

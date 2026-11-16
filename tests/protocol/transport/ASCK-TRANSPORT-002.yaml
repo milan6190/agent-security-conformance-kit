@@ -1,0 +1,15 @@
+id: ASCK-TRANSPORT-002
+title: Request with an unexpected Host header is rejected
+aisvs: ["10.3.3"]
+risks: [MCP07]
+level: 1
+requires: [principal:reader]
+rationale: AISVS asks for Origin and Host to be validated independently.
+steps:
+  - name: valid token, rebinding Host
+    as: reader
+    headers: {Host: "evil.asck.invalid"}
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}}}
+    expect:
+      blocked: true
+      canary_not_called: [search_docs]

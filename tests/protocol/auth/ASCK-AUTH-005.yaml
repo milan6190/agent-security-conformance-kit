@@ -1,0 +1,13 @@
+id: ASCK-AUTH-005
+title: Token from an untrusted issuer is rejected
+aisvs: ["10.2.2"]
+risks: [ASI03]
+level: 1
+requires: [jwt, principal:reader]
+steps:
+  - name: wrong issuer
+    as: reader:wrong_issuer
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}}}
+    expect:
+      blocked: true
+      canary_not_called: [search_docs]

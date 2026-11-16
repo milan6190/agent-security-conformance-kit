@@ -1,0 +1,49 @@
+name: OWASP Agentic Security Conformance Kit
+description: Run AISVS C9/C10 conformance tests against an MCP gateway or server and upload SARIF results.
+branding:
+  icon: shield
+  color: blue
+inputs:
+  target:
+    description: Path to the target profile (YAML).
+    required: true
+  tests:
+    description: Directory of test cases. Defaults to the kit's bundled tests.
+    required: false
+    default: ""
+  only:
+    description: Comma-separated test ID prefixes to run.
+    required: false
+    default: ""
+  upload-sarif:
+    description: Upload report.sarif to GitHub code scanning.
+    required: false
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.24"
+    - name: Build asck
+      shell: bash
+      run: cd "${{ github.action_path }}" && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/asck" ./cmd/asck
+    - name: Run conformance tests
+      id: run
+      shell: bash
+      run: |
+        TESTS="${{ inputs.tests }}"
+        [ -z "$TESTS" ] && TESTS="${{ github.action_path }}/tests"
+        "$RUNNER_TEMP/asck" run -target "${{ inputs.target }}" -tests "$TESTS" -only "${{ inputs.only }}" -out asck-report
+    - name: Upload SARIF
+      if: always() && inputs.upload-sarif == 'true'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: asck-report/report.sarif
+        category: asck
+    - name: Upload reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: asck-report
+        path: asck-report

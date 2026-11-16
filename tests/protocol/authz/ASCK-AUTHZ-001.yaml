@@ -1,0 +1,24 @@
+id: ASCK-AUTHZ-001
+title: tools/list shows only tools the caller is authorized for
+aisvs: ["10.2.4"]
+risks: [ASI02, MCP02]
+level: 2
+requires: [principal:reader, principal:admin]
+rationale: >
+  A model that never sees a tool cannot be steered into calling it. The list
+  must vary by authorization context: the admin step proves the gateway is
+  filtering, not just hiding everything.
+steps:
+  - name: reader lists tools
+    as: reader
+    rpc: {method: tools/list}
+    expect:
+      allowed: true
+      tools_list_includes: [search_docs, read_file]
+      tools_list_excludes: [delete_repo, admin_reset]
+  - name: admin lists tools
+    as: admin
+    rpc: {method: tools/list}
+    expect:
+      allowed: true
+      tools_list_includes: [search_docs, delete_repo, admin_reset]

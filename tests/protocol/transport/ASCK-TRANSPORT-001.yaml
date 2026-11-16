@@ -1,0 +1,17 @@
+id: ASCK-TRANSPORT-001
+title: Request from an untrusted Origin is rejected
+aisvs: ["10.3.3"]
+risks: [MCP07]
+level: 1
+requires: [principal:reader]
+rationale: >
+  Validating Origin blocks DNS-rebinding attacks where a web page drives a
+  local or internal MCP endpoint through the victim's browser.
+steps:
+  - name: valid token, hostile Origin
+    as: reader
+    headers: {Origin: "http://evil.asck.invalid"}
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}}}
+    expect:
+      blocked: true
+      canary_not_called: [search_docs]
