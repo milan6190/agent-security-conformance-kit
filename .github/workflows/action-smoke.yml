@@ -1,0 +1,35 @@
+name: action-smoke
+# Exercises the published GitHub Action end to end: start the reference
+# gateway, run the action against it, upload SARIF to code scanning.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      ASCK_JWT_SECRET: asck-ci-secret-asck-ci-secret-00001
+      MCP_UPSTREAM_AUTH: Bearer upstream-only-token
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Start reference gateway
+        run: |
+          go build -o /tmp/reference-gateway ./cmd/reference-gateway
+          /tmp/reference-gateway -config targets/reference-gateway/config.json > /tmp/gw.log 2>&1 &
+          for i in $(seq 1 20); do curl -fs http://127.0.0.1:8080/healthz && break; sleep 0.5; done
+      - name: Run the conformance kit action
+        uses: ./
+        with:
+          target: targets/reference-gateway/target.yaml
+      - name: Gateway log on failure
+        if: failure()
+        run: cat /tmp/gw.log
