@@ -42,18 +42,20 @@ The command exits 1 if any test fails, so it can gate CI.
 
 ## v0.1 test pack
 
-| Area | Tests | AISVS 1.01 |
+| Area | Checks | AISVS 1.01 |
 | --- | --- | --- |
 | Token validation | missing, malformed, expired, wrong audience, wrong issuer, forged (bad signature, `alg: none`) | 10.2.1, 10.2.2, 10.2.7 |
-| Tool authorization | `tools/list` filtered per caller; unauthorized `tools/call` blocked before the tool; control test that allowed calls still work | 10.2.4, 10.2.5, 9.5.1, 9.5.3 |
+| Tool authorization | `tools/list` filtered per caller; unauthorized `tools/call` blocked before the tool; argument values outside the caller's grant (including path traversal) blocked; control tests that allowed calls still work | 10.2.4, 10.2.5, 9.5.1, 9.5.3 |
 | Token passthrough | the client's token never reaches the upstream server | 10.2.7 |
 | Transport | hostile `Origin` and `Host` rejected (DNS rebinding) | 10.3.3 |
 | Limits | oversized payload rejected | 10.4.5 |
+| Schema validation | unrecognized, mistyped, missing and oversized arguments rejected; results checked against `outputSchema` (with control) | 10.4.1, 10.4.3, 10.4.4, 9.3.2 |
+| Schema safety | remote `$ref` never fetched and treated as invalid; pathologically deep schemas bounded | 10.4.13, 10.4.14, 10.4.15 |
 | Secrets | credentials in tool results and tool arguments do not cross the boundary | 9.5.4 |
 | Injection | hidden instructions in tool results and tool descriptions screened | 10.4.2 |
 | Rug pull | a tool whose definition changes after approval cannot be called | 10.4.8 |
 
-Run `bin/asck list` for the full list. These tests cover 13 of the 76 active C9/C10 requirements. The report's coverage map shows every requirement as pass, fail, skipped or not covered.
+Run `bin/asck list` for the full list. These tests cover 19 of the 76 active C9/C10 requirements. The report's coverage map shows every requirement as pass, fail, skipped or not covered.
 
 **What "pass" means.** A requirement passes when every test mapped to it passes. The tests check specific, observable behaviour. A pass is evidence, not certification, and a requirement can have aspects no test covers yet.
 

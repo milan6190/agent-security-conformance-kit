@@ -30,3 +30,35 @@ func TestCheck(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckCallArgs(t *testing.T) {
+	p := Policy{Rules: []Rule{
+		{Role: "reader", AllowTools: []string{"read_file"}, ArgRules: []ArgRule{{Tool: "read_file", Arg: "path", Allow: []string{"docs/*"}}}},
+		{Role: "admin", AllowTools: []string{"*"}},
+	}}
+	cases := []struct {
+		roles []string
+		path  any
+		want  bool
+	}{
+		{[]string{"reader"}, "docs/handbook.md", true},
+		{[]string{"reader"}, "secrets/prod.env", false},
+		{[]string{"reader"}, "/etc/passwd", false},
+		{[]string{"reader"}, "docs/../secrets/prod.env", false},
+		{[]string{"reader"}, "docs/./a.md", false},
+		{[]string{"reader"}, "docs\\..\\x", false},
+		{[]string{"reader"}, 42, false},
+		{[]string{"reader"}, nil, false},
+		{[]string{"admin"}, "/etc/passwd", true},
+		{[]string{"reader", "admin"}, "/etc/passwd", true}, // admin grant has no arg rule
+	}
+	for _, c := range cases {
+		args := map[string]any{}
+		if c.path != nil {
+			args["path"] = c.path
+		}
+		if got := p.CheckCall(c.roles, "read_file", args).Allowed; got != c.want {
+			t.Errorf("%v %v: got %v want %v", c.roles, c.path, got, c.want)
+		}
+	}
+}

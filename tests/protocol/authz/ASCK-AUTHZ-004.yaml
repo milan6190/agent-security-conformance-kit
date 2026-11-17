@@ -1,0 +1,30 @@
+id: ASCK-AUTHZ-004
+title: Argument values outside the caller's grant are blocked before the tool
+aisvs: ["10.2.5", "9.5.1"]
+risks: [ASI02, MCP02]
+level: 2
+requires: [principal:reader]
+rationale: >
+  Being allowed to call a tool is not the same as being allowed to call it
+  with any argument. The contract limits reader's read_file to docs/*; paths
+  outside it, including traversal that only looks like docs/, must not reach
+  the tool.
+steps:
+  - name: reader reads an absolute path
+    as: reader
+    rpc: {method: tools/call, params: {name: read_file, arguments: {path: /etc/passwd}}}
+    expect:
+      blocked: true
+      canary_not_called: [read_file]
+  - name: reader reads outside docs/
+    as: reader
+    rpc: {method: tools/call, params: {name: read_file, arguments: {path: secrets/prod.env}}}
+    expect:
+      blocked: true
+      canary_not_called: [read_file]
+  - name: reader escapes docs/ with traversal
+    as: reader
+    rpc: {method: tools/call, params: {name: read_file, arguments: {path: docs/../secrets/prod.env}}}
+    expect:
+      blocked: true
+      canary_not_called: [read_file]

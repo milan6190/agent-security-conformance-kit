@@ -10,7 +10,11 @@
   },
   "policy": {
     "rules": [
-      { "role": "reader", "allow_tools": ["search_docs", "read_file"] },
+      {
+        "role": "reader",
+        "allow_tools": ["search_docs", "read_file"],
+        "arg_rules": [{ "tool": "read_file", "arg": "path", "allow": ["docs/*"] }]
+      },
       { "role": "admin", "allow_tools": ["*"] }
     ]
   },
@@ -20,6 +24,7 @@
     "allowed_origins": ["http://localhost:8080"],
     "allowed_hosts": ["127.0.0.1:8080", "localhost:8080"],
     "screen_injection": true,
-    "pin_tools": true
+    "pin_tools": true,
+    "validate_schemas": true
   }
 }

@@ -1,0 +1,16 @@
+id: ASCK-AUTHZ-005
+title: Argument value inside the caller's grant still works (control)
+aisvs: ["10.2.5", "9.5.1"]
+risks: [ASI02]
+level: 2
+requires: [principal:reader]
+rationale: >
+  Control for ASCK-AUTHZ-004. A target that refuses read_file outright would
+  pass the deny test; this proves an allowed path reaches the tool.
+steps:
+  - name: reader reads a file under docs/
+    as: reader
+    rpc: {method: tools/call, params: {name: read_file, arguments: {path: docs/handbook.md}}}
+    expect:
+      allowed: true
+      canary_called: [read_file]

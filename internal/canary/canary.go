@@ -22,22 +22,29 @@ const (
 	InjectionMarker   = "ASCK-INJECTION-7f3a"
 )
 
+// MaxArgLength is the maxLength declared for every default tool argument.
+const MaxArgLength = 4096
+
 // Tool is a canary tool definition.
 type Tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
+	Name         string         `json:"name"`
+	Description  string         `json:"description"`
+	InputSchema  map[string]any `json:"inputSchema"`
+	OutputSchema map[string]any `json:"outputSchema,omitempty"`
 }
 
 // DefaultTools is the fixed catalog the target contract refers to
 // (see docs/target-contract.md).
 func DefaultTools() []Tool {
+	// Strict schemas: one required string argument, bounded in length, and
+	// no other properties. Gateways that validate arguments (AISVS 10.4.3,
+	// 10.4.4) enforce these; the canary itself accepts anything.
 	obj := func(props ...string) map[string]any {
 		p := map[string]any{}
 		for _, n := range props {
-			p[n] = map[string]any{"type": "string"}
+			p[n] = map[string]any{"type": "string", "maxLength": MaxArgLength}
 		}
-		return map[string]any{"type": "object", "properties": p}
+		return map[string]any{"type": "object", "properties": p, "required": props, "additionalProperties": false}
 	}
 	return []Tool{
 		{Name: "search_docs", Description: "Search internal documentation.", InputSchema: obj("query")},
@@ -57,14 +64,20 @@ type Call struct {
 	Raw     string          `json:"raw"`
 }
 
+// MethodFetch marks a non-MCP HTTP request, such as a validator resolving a
+// remote JSON Schema $ref against the canary.
+const MethodFetch = "http-fetch"
+
 // Server is the canary MCP server.
 type Server struct {
-	mu      sync.Mutex
-	tools   []Tool
-	results map[string]string
-	calls   []Call
-	srv     *http.Server
-	ln      net.Listener
+	mu         sync.Mutex
+	tools      []Tool
+	results    map[string]string
+	structured map[string]any
+	calls      []Call
+	baseURL    string
+	srv        *http.Server
+	ln         net.Listener
 }
 
 // New creates a server with the default tool catalog.
@@ -80,7 +93,37 @@ func (s *Server) Reset() {
 	defer s.mu.Unlock()
 	s.tools = DefaultTools()
 	s.results = map[string]string{}
+	s.structured = map[string]any{}
 	s.calls = nil
+}
+
+// AddTool adds a test-scoped tool, replacing any tool with the same name.
+func (s *Server) AddTool(t Tool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.tools {
+		if s.tools[i].Name == t.Name {
+			s.tools[i] = t
+			return
+		}
+	}
+	s.tools = append(s.tools, t)
+}
+
+// SetStructured sets the structuredContent a tool returns. Unless SetResult
+// overrides it, the text content becomes the JSON encoding of v.
+func (s *Server) SetStructured(tool string, v any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.structured[tool] = v
+}
+
+// BaseURL is the canary's root URL, e.g. http://127.0.0.1:9901 (empty
+// before Start).
+func (s *Server) BaseURL() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.baseURL
 }
 
 // SetResult overrides the text returned by a tool.
@@ -90,13 +133,19 @@ func (s *Server) SetResult(tool, text string) {
 	s.results[tool] = text
 }
 
-// PatchTool changes a tool's description (simulates a "rug pull").
-func (s *Server) PatchTool(name, description string) {
+// PatchTool changes a tool's description and, if inputSchema is non-nil,
+// its input schema (simulates a "rug pull").
+func (s *Server) PatchTool(name, description string, inputSchema map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.tools {
 		if s.tools[i].Name == name {
-			s.tools[i].Description = description
+			if description != "" {
+				s.tools[i].Description = description
+			}
+			if inputSchema != nil {
+				s.tools[i].InputSchema = inputSchema
+			}
 		}
 	}
 }
@@ -127,11 +176,25 @@ func (s *Server) Start(addr string) (string, error) {
 		return "", err
 	}
 	s.ln = ln
+	s.mu.Lock()
+	s.baseURL = "http://" + ln.Addr().String()
+	s.mu.Unlock()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", s.handle)
+	mux.HandleFunc("/", s.handleFetch)
 	s.srv = &http.Server{Handler: mux}
 	go s.srv.Serve(ln)
 	return "http://" + ln.Addr().String() + "/mcp", nil
+}
+
+// handleFetch records any non-MCP request and answers with a permissive
+// JSON Schema, so a validator that resolves a remote $ref here would end up
+// accepting anything.
+func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.calls = append(s.calls, Call{Method: MethodFetch, Headers: r.Header.Clone(), Raw: r.Method + " " + r.URL.RequestURI()})
+	s.mu.Unlock()
+	writeJSON(w, map[string]any{})
 }
 
 // Close stops the server.
@@ -163,6 +226,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	s.calls = append(s.calls, call)
 	tools := append([]Tool(nil), s.tools...)
 	result, hasResult := s.results[call.Tool]
+	structured, hasStructured := s.structured[call.Tool]
 	s.mu.Unlock()
 
 	if len(msg.ID) == 0 { // notification
@@ -184,8 +248,16 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	case "tools/call":
 		if !hasResult {
 			result = "ok: " + call.Tool + " executed"
+			if hasStructured {
+				b, _ := json.Marshal(structured)
+				result = string(b)
+			}
 		}
-		res = map[string]any{"content": []any{map[string]any{"type": "text", "text": result}}}
+		out := map[string]any{"content": []any{map[string]any{"type": "text", "text": result}}}
+		if hasStructured {
+			out["structuredContent"] = structured
+		}
+		res = out
 	default:
 		writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": msg.ID, "error": map[string]any{"code": -32601, "message": "method not found"}})
 		return

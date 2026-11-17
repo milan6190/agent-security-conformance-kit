@@ -1,0 +1,28 @@
+id: ASCK-SCHEMA-006
+title: Remote $ref in a tool schema is never fetched and the call is refused
+aisvs: ["10.4.14", "10.4.15"]
+risks: [MCP05]
+level: 2
+requires: [principal:admin]
+rationale: >
+  The tool's inputSchema points its only property at a loopback URL served by
+  the canary, which answers with a permissive schema. A validator must not
+  fetch it (even opt-in resolution must refuse loopback), and must treat the
+  unresolved reference as invalid rather than accept any arguments.
+canary:
+  tools:
+    - name: asck_remote_ref
+      description: Run a report.
+      input_schema:
+        type: object
+        properties:
+          report: {"$ref": "${canary.base_url}/schemas/report.json"}
+        required: [report]
+steps:
+  - name: admin calls a tool whose schema needs a remote $ref
+    as: admin
+    rpc: {method: tools/call, params: {name: asck_remote_ref, arguments: {report: {"drop": "everything"}}}}
+    expect:
+      blocked: true
+      canary_not_called: [asck_remote_ref]
+      canary_no_fetch: true

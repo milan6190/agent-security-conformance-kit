@@ -1,0 +1,22 @@
+id: ASCK-SCHEMA-007
+title: Pathologically deep tool schema is refused instead of trusted
+aisvs: ["10.4.13"]
+risks: [MCP05]
+level: 2
+requires: [principal:admin]
+rationale: >
+  The tool's inputSchema nests 2,000 objects deep. A validator with resource
+  bounds refuses it promptly; one without either stalls or skips validation
+  and forwards the call.
+canary:
+  tools:
+    - name: asck_deep
+      description: Store a settings tree.
+      nested_schema_depth: 2000
+steps:
+  - name: admin calls a tool with a 2,000-level schema
+    as: admin
+    rpc: {method: tools/call, params: {name: asck_deep, arguments: {a: {a: "x"}}}}
+    expect:
+      blocked: true
+      canary_not_called: [asck_deep]

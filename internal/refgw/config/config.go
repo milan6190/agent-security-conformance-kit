@@ -41,6 +41,7 @@ type Config struct {
 		AllowedHosts    []string `json:"allowed_hosts"`
 		ScreenInjection bool     `json:"screen_injection"`
 		PinTools        bool     `json:"pin_tools"`
+		ValidateSchemas bool     `json:"validate_schemas"`
 	} `json:"hardening"`
 
 	// Resolved values.
