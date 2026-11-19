@@ -17,12 +17,14 @@ import (
 	"github.com/OWASP/www-project-agentic-security-conformance-kit/internal/refgw/auth"
 	"github.com/OWASP/www-project-agentic-security-conformance-kit/internal/refgw/policy"
 	"github.com/OWASP/www-project-agentic-security-conformance-kit/internal/refgw/redact"
+	"github.com/OWASP/www-project-agentic-security-conformance-kit/internal/refgw/schema"
 )
 
 // JSON-RPC error codes used by the gateway.
 const (
 	codeParseError = -32700
 	codeForbidden  = -32001
+	codeBadResult  = -32002
 )
 
 // Methods that are always permitted once a caller is authenticated.
@@ -63,6 +65,12 @@ type Options struct {
 	// PinTools records each tool's definition the first time it is seen and
 	// refuses tools whose definition later changes (AISVS 10.4.8).
 	PinTools bool
+	// ValidateSchemas checks tools/call arguments against the tool's
+	// inputSchema before forwarding (AISVS 10.4.3, 10.4.4) and structured
+	// results against its outputSchema before returning them (10.4.1, 9.3.2).
+	// Schemas with external or unresolved $ref, or beyond size limits, are
+	// refused (10.4.13, 10.4.14, 10.4.15).
+	ValidateSchemas bool
 }
 
 // Gateway is an http.Handler that guards one upstream MCP server.
@@ -115,7 +123,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.handlePost(w, r, p)
 	case http.MethodGet, http.MethodDelete:
 		// GET opens a server->client SSE stream; DELETE ends a session.
-		g.forward(w, r, p, nil)
+		g.forward(w, r, p, nil, nil)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -139,12 +147,11 @@ func (g *Gateway) handlePost(w http.ResponseWriter, r *http.Request, p *auth.Pri
 
 	var denials []msg
 	deniedAny := false
+	outSchemas := map[string]map[string]any{} // rpc id -> outputSchema
 	for _, m := range msgs {
 		dec, kind, target := g.authorize(p, m)
-		if dec.Allowed && kind == policy.Tool && g.opt.PinTools {
-			if reason := g.verifyPinned(r, target); reason != "" {
-				dec = policy.Decision{Allowed: false, Reason: reason}
-			}
+		if dec.Allowed && kind == policy.Tool && (g.opt.PinTools || g.opt.ValidateSchemas) {
+			dec = g.checkTool(r, m, target, outSchemas)
 		}
 		counts := redact.Counts{}
 		if dec.Allowed && g.opt.RedactRequests {
@@ -180,7 +187,44 @@ func (g *Gateway) handlePost(w http.ResponseWriter, r *http.Request, p *auth.Pri
 	} else {
 		out, _ = json.Marshal(msgs[0])
 	}
-	g.forward(w, r, p, out)
+	g.forward(w, r, p, out, outSchemas)
+}
+
+// checkTool runs the definition-dependent checks for one tools/call: the
+// pin (10.4.8) and argument validation (10.4.3, 10.4.4). It records the
+// tool's outputSchema so the result can be validated on the way back.
+func (g *Gateway) checkTool(r *http.Request, m msg, name string, outSchemas map[string]map[string]any) policy.Decision {
+	def, reason := g.fetchTool(r, name)
+	if reason != "" {
+		return policy.Decision{Allowed: false, Reason: reason}
+	}
+	if g.opt.PinTools && !g.pins.observe(name, toolHash(def)) {
+		return policy.Decision{Allowed: false, Reason: "tool definition changed since it was approved; re-approval required"}
+	}
+	if !g.opt.ValidateSchemas {
+		return policy.Decision{Allowed: true, Reason: "allowed"}
+	}
+	in, _ := def["inputSchema"].(map[string]any)
+	if in == nil {
+		return policy.Decision{Allowed: false, Reason: "tool declares no inputSchema"}
+	}
+	params, _ := m["params"].(map[string]any)
+	args, ok := params["arguments"]
+	if !ok {
+		args = map[string]any{}
+	}
+	if err := schema.Validate(in, args, schema.DefaultLimits); err != nil {
+		return policy.Decision{Allowed: false, Reason: "arguments rejected: " + err.Error()}
+	}
+	if out, ok := def["outputSchema"].(map[string]any); ok {
+		if err := schema.Check(out, schema.DefaultLimits); err != nil {
+			return policy.Decision{Allowed: false, Reason: "output schema rejected: " + err.Error()}
+		}
+		if id, ok := m["id"]; ok {
+			outSchemas[fmt.Sprint(id)] = out
+		}
+	}
+	return policy.Decision{Allowed: true, Reason: "allowed"}
 }
 
 // authorize returns the policy decision for a single client->server message.
@@ -195,7 +239,8 @@ func (g *Gateway) authorize(p *auth.Principal, m msg) (policy.Decision, policy.K
 
 	switch method {
 	case "tools/call":
-		return g.opt.Policy.Check(p.Roles, policy.Tool, str("name")), policy.Tool, str("name")
+		args, _ := params["arguments"].(map[string]any)
+		return g.opt.Policy.CheckCall(p.Roles, str("name"), args), policy.Tool, str("name")
 	case "resources/read", "resources/subscribe", "resources/unsubscribe":
 		return g.opt.Policy.Check(p.Roles, policy.Resource, str("uri")), policy.Resource, str("uri")
 	case "prompts/get":
@@ -222,7 +267,14 @@ func (g *Gateway) redactRequest(m msg, c redact.Counts) {
 }
 
 // processResponse filters list results by policy and redacts payloads.
-func (g *Gateway) processResponse(p *auth.Principal, m msg) {
+func (g *Gateway) processResponse(p *auth.Principal, m msg, outSchemas map[string]map[string]any) {
+	if out, ok := outSchemas[fmt.Sprint(m["id"])]; ok {
+		if reason := checkResult(m, out); reason != "" {
+			g.opt.Logger.Warn("tool_result_rejected", "subject", p.Subject, "reason", reason)
+			delete(m, "result")
+			m["error"] = map[string]any{"code": codeBadResult, "message": "Tool result rejected by MCP Guard: " + reason}
+		}
+	}
 	if res, ok := m["result"].(map[string]any); ok {
 		if g.opt.PinTools {
 			g.dropChangedTools(res)
@@ -271,7 +323,27 @@ func (g *Gateway) filterList(p *auth.Principal, res map[string]any, key, field s
 
 var forwardHeaders = []string{"Accept", "Content-Type", "Mcp-Session-Id", "Mcp-Protocol-Version", "Last-Event-Id"}
 
-func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, p *auth.Principal, body []byte) {
+// checkResult validates a tools/call result against the tool's outputSchema.
+// A tool that declares one must return conforming structuredContent.
+func checkResult(m msg, out map[string]any) string {
+	res, ok := m["result"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	if isErr, _ := res["isError"].(bool); isErr {
+		return ""
+	}
+	sc, ok := res["structuredContent"]
+	if !ok {
+		return "missing structuredContent required by outputSchema"
+	}
+	if err := schema.Validate(out, sc, schema.DefaultLimits); err != nil {
+		return "structuredContent does not match outputSchema: " + err.Error()
+	}
+	return ""
+}
+
+func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, p *auth.Principal, body []byte, outSchemas map[string]map[string]any) {
 	var rd io.Reader
 	if body != nil {
 		rd = bytes.NewReader(body)
@@ -314,7 +386,7 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, p *auth.Princi
 	switch {
 	case strings.HasPrefix(ct, "text/event-stream"):
 		w.WriteHeader(resp.StatusCode)
-		g.streamSSE(w, resp.Body, p)
+		g.streamSSE(w, resp.Body, p, outSchemas)
 	case strings.HasPrefix(ct, "application/json"):
 		raw, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -322,14 +394,14 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, p *auth.Princi
 			return
 		}
 		w.WriteHeader(resp.StatusCode)
-		w.Write(g.rewriteJSON(p, raw))
+		w.Write(g.rewriteJSON(p, raw, outSchemas))
 	default:
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
 	}
 }
 
-func (g *Gateway) rewriteJSON(p *auth.Principal, raw []byte) []byte {
+func (g *Gateway) rewriteJSON(p *auth.Principal, raw []byte, outSchemas map[string]map[string]any) []byte {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return raw
 	}
@@ -342,7 +414,7 @@ func (g *Gateway) rewriteJSON(p *auth.Principal, raw []byte) []byte {
 		return raw
 	}
 	for _, m := range msgs {
-		g.processResponse(p, m)
+		g.processResponse(p, m, outSchemas)
 	}
 	var out []byte
 	if batch {
@@ -355,7 +427,7 @@ func (g *Gateway) rewriteJSON(p *auth.Principal, raw []byte) []byte {
 
 // streamSSE rewrites each SSE event's data payload while preserving
 // event ids (for resumability) and flushing per event.
-func (g *Gateway) streamSSE(w http.ResponseWriter, body io.Reader, p *auth.Principal) {
+func (g *Gateway) streamSSE(w http.ResponseWriter, body io.Reader, p *auth.Principal, outSchemas map[string]map[string]any) {
 	fl, _ := w.(http.Flusher)
 	br := bufio.NewReaderSize(body, 64*1024)
 	var fields []string
@@ -369,7 +441,7 @@ func (g *Gateway) streamSSE(w http.ResponseWriter, body io.Reader, p *auth.Princ
 			b.WriteString(f + "\n")
 		}
 		if len(data) > 0 {
-			payload := g.rewriteJSON(p, []byte(strings.Join(data, "\n")))
+			payload := g.rewriteJSON(p, []byte(strings.Join(data, "\n")), outSchemas)
 			for _, line := range strings.Split(string(payload), "\n") {
 				b.WriteString("data: " + line + "\n")
 			}

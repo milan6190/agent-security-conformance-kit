@@ -32,6 +32,22 @@ type Test struct {
 type CanarySetup struct {
 	// Results overrides the text a tool returns.
 	Results map[string]string `yaml:"results"`
+	// Structured sets the structuredContent a tool returns.
+	Structured map[string]any `yaml:"structured"`
+	// Tools adds test-scoped tools. Their names must start with "asck_";
+	// the target contract grants them to the admin principal.
+	Tools []ToolDef `yaml:"tools"`
+}
+
+// ToolDef is a test-scoped canary tool.
+type ToolDef struct {
+	Name         string         `yaml:"name"`
+	Description  string         `yaml:"description"`
+	InputSchema  map[string]any `yaml:"input_schema"`
+	OutputSchema map[string]any `yaml:"output_schema"`
+	// NestedSchemaDepth, if set, replaces InputSchema with an object schema
+	// nested this many levels deep (for schema resource-bound tests).
+	NestedSchemaDepth int `yaml:"nested_schema_depth"`
 }
 
 // Step is one request sent to the system under test.
@@ -41,6 +57,8 @@ type Step struct {
 	RPC      map[string]any    `yaml:"rpc"`
 	Headers  map[string]string `yaml:"headers"`
 	PadBytes int               `yaml:"pad_bytes"` // adds a large junk field to the request
+	// ArgBytes sets each named tools/call argument to a string of that many bytes.
+	ArgBytes map[string]int `yaml:"arg_bytes"`
 	// CanaryMutate changes tool definitions on the canary before this step runs.
 	CanaryMutate map[string]ToolPatch `yaml:"canary_mutate"`
 	Expect       Expect               `yaml:"expect"`
@@ -48,7 +66,8 @@ type Step struct {
 
 // ToolPatch changes a canary tool definition.
 type ToolPatch struct {
-	Description string `yaml:"description"`
+	Description string         `yaml:"description"`
+	InputSchema map[string]any `yaml:"input_schema"`
 }
 
 // Expect lists the assertions for a step. All present assertions must hold.
@@ -59,10 +78,13 @@ type Expect struct {
 	CanaryNotCalled           []string `yaml:"canary_not_called"`
 	CanaryReceivedNotContains []string `yaml:"canary_received_not_contains"`
 	CanaryAuthNotClientToken  bool     `yaml:"canary_auth_not_client_token"`
-	ResponseContains          []string `yaml:"response_contains"`
-	ResponseNotContains       []string `yaml:"response_not_contains"`
-	ToolsListIncludes         []string `yaml:"tools_list_includes"`
-	ToolsListExcludes         []string `yaml:"tools_list_excludes"`
+	// CanaryNoFetch passes if nothing made a non-MCP HTTP request to the
+	// canary (for example, to resolve a remote JSON Schema $ref).
+	CanaryNoFetch       bool     `yaml:"canary_no_fetch"`
+	ResponseContains    []string `yaml:"response_contains"`
+	ResponseNotContains []string `yaml:"response_not_contains"`
+	ToolsListIncludes   []string `yaml:"tools_list_includes"`
+	ToolsListExcludes   []string `yaml:"tools_list_excludes"`
 	// BlockedOrExcluded passes if the step was blocked OR tools/list omits the tool.
 	BlockedOrExcludes []string `yaml:"blocked_or_excludes"`
 }
@@ -147,6 +169,14 @@ func (t *Test) validate() error {
 	}
 	if len(t.Steps) == 0 {
 		return fmt.Errorf("at least one step is required")
+	}
+	for _, d := range t.Canary.Tools {
+		if !strings.HasPrefix(d.Name, "asck_") {
+			return fmt.Errorf("test-scoped tool %q: name must start with asck_", d.Name)
+		}
+		if d.NestedSchemaDepth < 0 || d.NestedSchemaDepth > 4000 {
+			return fmt.Errorf("test-scoped tool %q: nested_schema_depth must be 0..4000", d.Name)
+		}
 	}
 	return nil
 }

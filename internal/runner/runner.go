@@ -84,8 +84,14 @@ func (r *Runner) Run(t spec.Test) TestResult {
 		return res
 	}
 	r.Canary.Reset()
+	for _, d := range t.Canary.Tools {
+		r.Canary.AddTool(r.toolDef(d))
+	}
 	for tool, text := range t.Canary.Results {
 		r.Canary.SetResult(tool, canary.Expand(text))
+	}
+	for tool, v := range t.Canary.Structured {
+		r.Canary.SetStructured(tool, r.expandAny(v))
 	}
 	sessions := map[string]string{}
 
@@ -95,7 +101,8 @@ func (r *Runner) Run(t spec.Test) TestResult {
 			name = fmt.Sprintf("step %d", i+1)
 		}
 		for tool, p := range st.CanaryMutate {
-			r.Canary.PatchTool(tool, canary.Expand(p.Description))
+			schema, _ := r.expandAny(p.InputSchema).(map[string]any)
+			r.Canary.PatchTool(tool, canary.Expand(p.Description), schema)
 		}
 		hdr, err := r.authHeaders(st.As)
 		if err != nil {
@@ -224,7 +231,22 @@ type response struct {
 func (r *Runner) send(st spec.Step, id int, hdr map[string]string, session string) (*response, error) {
 	msg := map[string]any{"jsonrpc": "2.0", "id": id}
 	for k, v := range st.RPC {
-		msg[k] = expandAny(v)
+		msg[k] = r.expandAny(v)
+	}
+	if len(st.ArgBytes) > 0 {
+		params, _ := msg["params"].(map[string]any)
+		if params == nil {
+			params = map[string]any{}
+			msg["params"] = params
+		}
+		args, _ := params["arguments"].(map[string]any)
+		if args == nil {
+			args = map[string]any{}
+			params["arguments"] = args
+		}
+		for k, n := range st.ArgBytes {
+			args[k] = strings.Repeat("A", n)
+		}
 	}
 	if st.PadBytes > 0 {
 		msg["_asck_pad"] = strings.Repeat("A", st.PadBytes)
@@ -240,10 +262,10 @@ func (r *Runner) send(st spec.Step, id int, hdr map[string]string, session strin
 	setHeaders(req, hdr, session)
 	for k, v := range st.Headers {
 		if strings.EqualFold(k, "Host") {
-			req.Host = canary.Expand(v) // net/http ignores a Host entry in Header
+			req.Host = r.expand(v) // net/http ignores a Host entry in Header
 			continue
 		}
-		req.Header.Set(k, canary.Expand(v))
+		req.Header.Set(k, r.expand(v))
 	}
 	resp, err := r.Client.Do(req)
 	if err != nil {
@@ -361,6 +383,14 @@ func check(e spec.Expect, resp *response, delta []canary.Call, hdr map[string]st
 			}
 		}
 	}
+	if e.CanaryNoFetch {
+		for _, c := range delta {
+			if c.Method == canary.MethodFetch {
+				f = append(f, "the canary received a non-MCP fetch: "+c.Raw)
+				break
+			}
+		}
+	}
 	if e.CanaryAuthNotClientToken {
 		if tok := hdr["Authorization"]; tok != "" {
 			bare := strings.TrimPrefix(tok, "Bearer ")
@@ -416,24 +446,56 @@ func headerContains(h map[string][]string, s string) bool {
 	return false
 }
 
-func expandAny(v any) any {
+// expand replaces ${canary.*} placeholders, including ${canary.base_url},
+// the running canary's root URL.
+func (r *Runner) expand(s string) string {
+	return strings.ReplaceAll(canary.Expand(s), "${canary.base_url}", r.Canary.BaseURL())
+}
+
+func (r *Runner) expandAny(v any) any {
 	switch t := v.(type) {
 	case string:
-		return canary.Expand(t)
+		return r.expand(t)
 	case map[string]any:
 		out := map[string]any{}
 		for k, x := range t {
-			out[k] = expandAny(x)
+			out[k] = r.expandAny(x)
 		}
 		return out
 	case []any:
 		out := make([]any, len(t))
 		for i, x := range t {
-			out[i] = expandAny(x)
+			out[i] = r.expandAny(x)
 		}
 		return out
 	}
 	return v
+}
+
+// toolDef turns a test-scoped tool definition into a canary tool.
+func (r *Runner) toolDef(d spec.ToolDef) canary.Tool {
+	t := canary.Tool{Name: d.Name, Description: canary.Expand(d.Description)}
+	if t.Description == "" {
+		t.Description = "Test-scoped tool."
+	}
+	t.InputSchema, _ = r.expandAny(d.InputSchema).(map[string]any)
+	t.OutputSchema, _ = r.expandAny(d.OutputSchema).(map[string]any)
+	if d.NestedSchemaDepth > 0 {
+		t.InputSchema = nestedSchema(d.NestedSchemaDepth)
+	}
+	if t.InputSchema == nil {
+		t.InputSchema = map[string]any{"type": "object"}
+	}
+	return t
+}
+
+// nestedSchema builds {"type":"object","properties":{"a":{...}}} depth levels deep.
+func nestedSchema(depth int) map[string]any {
+	s := map[string]any{"type": "string"}
+	for range depth {
+		s = map[string]any{"type": "object", "properties": map[string]any{"a": s}}
+	}
+	return s
 }
 
 func copyMap(m map[string]string) map[string]string {

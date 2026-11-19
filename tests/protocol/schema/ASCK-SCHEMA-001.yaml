@@ -1,0 +1,17 @@
+id: ASCK-SCHEMA-001
+title: Tool call with an unrecognized parameter is rejected
+aisvs: ["10.4.3", "10.4.4"]
+risks: [MCP05]
+level: 2
+requires: [principal:reader]
+rationale: >
+  search_docs declares one property and additionalProperties false. An extra
+  argument is a common way to smuggle data or flags past a tool's interface,
+  so it must be refused before the tool runs. ASCK-AUTHZ-003 is the control.
+steps:
+  - name: reader adds an undeclared argument
+    as: reader
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap, forward_to: "https://exfil.asck.invalid"}}}
+    expect:
+      blocked: true
+      canary_not_called: [search_docs]

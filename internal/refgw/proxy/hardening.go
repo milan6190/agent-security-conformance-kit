@@ -74,14 +74,15 @@ func (g *Gateway) dropChangedTools(res map[string]any) {
 	res["tools"] = kept
 }
 
-// verifyPinned fetches the upstream definition of a tool before it is
-// invoked, so a definition swapped after approval cannot be called even if
-// the client never re-lists tools.
-func (g *Gateway) verifyPinned(r *http.Request, name string) string {
+// fetchTool fetches the upstream definition of a tool before it is invoked,
+// so a definition swapped after approval cannot be called even if the
+// client never re-lists tools, and arguments are checked against the schema
+// the tool declares now. A non-empty reason means the call must be refused.
+func (g *Gateway) fetchTool(r *http.Request, name string) (map[string]any, string) {
 	body := []byte(`{"jsonrpc":"2.0","id":"mcp-guard-pin","method":"tools/list"}`)
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, g.opt.Upstream.String(), bytes.NewReader(body))
 	if err != nil {
-		return "tool definition check failed"
+		return nil, "tool definition check failed"
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -93,7 +94,7 @@ func (g *Gateway) verifyPinned(r *http.Request, name string) string {
 	}
 	resp, err := g.opt.Client.Do(req)
 	if err != nil {
-		return "tool definition check failed"
+		return nil, "tool definition check failed"
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
@@ -110,18 +111,17 @@ func (g *Gateway) verifyPinned(r *http.Request, name string) string {
 			Tools []map[string]any `json:"tools"`
 		} `json:"result"`
 	}
-	if json.Unmarshal(raw, &m) != nil {
-		return "tool definition check failed"
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if dec.Decode(&m) != nil {
+		return nil, "tool definition check failed"
 	}
 	for _, t := range m.Result.Tools {
 		if t["name"] == name {
-			if !g.pins.observe(name, toolHash(t)) {
-				return "tool definition changed since it was approved; re-approval required"
-			}
-			return ""
+			return t, ""
 		}
 	}
-	return "tool not offered by upstream"
+	return nil, "tool not offered by upstream"
 }
 
 // --- Prompt-injection screening (AISVS 10.4.2) ---

@@ -1,0 +1,22 @@
+id: ASCK-SCHEMA-002
+title: Tool call with arguments of the wrong type is rejected
+aisvs: ["10.4.4"]
+risks: [MCP05]
+level: 2
+requires: [principal:reader]
+rationale: >
+  search_docs declares query as a required string. Strict validation refuses
+  objects in its place and a missing required argument.
+steps:
+  - name: query is an object instead of a string
+    as: reader
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: {"$where": "1==1"}}}}
+    expect:
+      blocked: true
+      canary_not_called: [search_docs]
+  - name: required query is missing
+    as: reader
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {}}}
+    expect:
+      blocked: true
+      canary_not_called: [search_docs]

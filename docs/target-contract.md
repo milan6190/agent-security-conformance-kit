@@ -18,19 +18,25 @@ The canary speaks MCP Streamable HTTP (JSON-RPC over POST) and answers `initiali
 
 The canary always offers these tools:
 
-| Tool | Meaning |
-| --- | --- |
-| `search_docs` | low-risk read |
-| `read_file` | low-risk read |
-| `delete_repo` | destructive |
-| `admin_reset` | privileged |
+| Tool | Argument | Meaning |
+| --- | --- | --- |
+| `search_docs` | `query` | low-risk read |
+| `read_file` | `path` | low-risk read |
+| `delete_repo` | `repo` | destructive |
+| `admin_reset` | `scope` | privileged |
+
+Each tool's `inputSchema` declares its one argument as a required string with `maxLength` 4096 and sets `additionalProperties: false`. The schema-validation tests expect the system under test to enforce these schemas.
+
+Some tests also add a **test-scoped tool** for their duration, named `asck_*` (for example, a tool with an `outputSchema` or a hostile `inputSchema`). It appears in `tools/list` only while that test runs.
 
 Configure your policy so that:
 
 | Role | May call |
 | --- | --- |
-| `reader` | `search_docs`, `read_file` |
-| `admin` | all four tools |
+| `reader` | `search_docs`; `read_file` only with a `path` matching `docs/*` |
+| `admin` | every tool, including test-scoped `asck_*` tools |
+
+The `docs/*` limit is what the argument-authorization test (`ASCK-AUTHZ-004`) checks. It sends `/etc/passwd`, `secrets/prod.env` and `docs/../secrets/prod.env` as reader, and expects all three to be blocked, while `docs/handbook.md` must still work (`ASCK-AUTHZ-005`).
 
 ## 3. Target profile
 

@@ -1,0 +1,18 @@
+id: ASCK-SCHEMA-003
+title: Oversized tool call parameter is rejected
+aisvs: ["10.4.3"]
+risks: [MCP05]
+level: 1
+requires: [principal:reader]
+rationale: >
+  search_docs declares maxLength 4096 for query. A 64 KiB value stays well
+  under any sensible request body limit (ASCK-LIMIT-001), so only parameter
+  validation catches it.
+steps:
+  - name: 64 KiB query
+    as: reader
+    arg_bytes: {query: 65536}
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {}}}
+    expect:
+      blocked: true
+      canary_not_called: [search_docs]

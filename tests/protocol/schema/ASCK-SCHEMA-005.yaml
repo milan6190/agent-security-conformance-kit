@@ -1,0 +1,33 @@
+id: ASCK-SCHEMA-005
+title: Tool result that matches its declared output schema is delivered (control)
+aisvs: ["10.4.1", "9.3.2"]
+risks: []
+level: 1
+requires: [principal:admin]
+rationale: >
+  Control for ASCK-SCHEMA-004. A target that drops every structured result
+  would pass the deny test; this proves conforming results get through.
+canary:
+  tools:
+    - name: asck_lookup
+      description: Look up a user's display name.
+      input_schema:
+        type: object
+        properties: {user_id: {type: string, maxLength: 64}}
+        required: [user_id]
+        additionalProperties: false
+      output_schema:
+        type: object
+        properties: {display_name: {type: string, maxLength: 128}}
+        required: [display_name]
+        additionalProperties: false
+  structured:
+    asck_lookup: {display_name: "ASCK Canary User"}
+steps:
+  - name: tool returns conforming structured content
+    as: admin
+    rpc: {method: tools/call, params: {name: asck_lookup, arguments: {user_id: u-1}}}
+    expect:
+      allowed: true
+      canary_called: [asck_lookup]
+      response_contains: ["ASCK Canary User"]

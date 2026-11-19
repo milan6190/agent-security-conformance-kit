@@ -21,7 +21,7 @@ import (
 const secret = "asck-e2e-secret-asck-e2e-secret-0001"
 
 // controlTests are expected to pass on any working target.
-var controlTests = map[string]bool{"ASCK-AUTHZ-003": true}
+var controlTests = map[string]bool{"ASCK-AUTHZ-003": true, "ASCK-AUTHZ-005": true, "ASCK-SCHEMA-005": true}
 
 func setup(t *testing.T) (*canary.Server, string, []spec.Test) {
 	t.Helper()

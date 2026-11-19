@@ -34,6 +34,7 @@ func Handler(cfg *config.Config, log *slog.Logger) (http.Handler, error) {
 		AllowedHosts:       cfg.Hardening.AllowedHosts,
 		ScreenInjection:    cfg.Hardening.ScreenInjection,
 		PinTools:           cfg.Hardening.PinTools,
+		ValidateSchemas:    cfg.Hardening.ValidateSchemas,
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", gw)
