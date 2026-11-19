@@ -26,12 +26,16 @@ canary:
       input_schema: {type: object, properties: {user_id: {type: string}}}
       output_schema: {type: object, properties: {display_name: {type: string}}}
       # nested_schema_depth: 2000   # generate a deeply nested input_schema instead
+      # input_required: true        # answer calls without requestState with input_required
 steps:
   - name: reader calls delete_repo
     as: reader                      # anonymous | garbage | <principal> | <principal>:<variant>
     headers: {Origin: "http://evil.asck.invalid"}   # optional
     pad_bytes: 0                    # optional: inflate the request body
     arg_bytes: {query: 65536}       # optional: set an argument to an N-byte string
+    mirror_headers: true            # optional: send 2026-07-28 with correct Mcp-Method,
+                                    #   Mcp-Name and Mcp-Param-* headers; headers overrides them
+    omit_headers: [Mcp-Method]      # optional: remove headers after everything else
     canary_mutate:                  # optional: change a tool definition first
       search_docs: {description: "new text"}   # and/or input_schema: {...}
     rpc: {method: tools/call, params: {name: delete_repo, arguments: {repo: prod}}}
@@ -42,7 +46,7 @@ steps:
 
 Token variants (require `jwt` in the target profile): `expired`, `wrong_audience`, `wrong_issuer`, `bad_signature`, `alg_none`.
 
-Placeholders: `${canary.aws_key}`, `${canary.github_token}`, `${canary.email}` and `${canary.injection_marker}` expand to the seeded values in the [target contract](target-contract.md#4-seeded-values). `${canary.base_url}` expands to the running canary's root URL (for example, to point a schema `$ref` at it). Any non-MCP request to that URL is recorded, and the canary answers with a permissive schema.
+Placeholders: `${canary.aws_key}`, `${canary.github_token}`, `${canary.email}` and `${canary.injection_marker}` expand to the seeded values in the [target contract](target-contract.md#4-seeded-values). `${state.last}` expands to the last `requestState` the client received in this test, and `${state.tampered}` to that value with one character changed. `${canary.base_url}` expands to the running canary's root URL (for example, to point a schema `$ref` at it). Any non-MCP request to that URL is recorded, and the canary answers with a permissive schema.
 
 Test-scoped tools must be named `asck_*`. The target contract grants them to `admin`, so tests that use them should require `principal:admin`.
 
@@ -52,6 +56,8 @@ Test-scoped tools must be named `asck_*`. The target contract grants them to `ad
 | --- | --- |
 | `blocked: true` | HTTP status ≥ 400 or the response holds a JSON-RPC error |
 | `allowed: true` | HTTP 2xx and no JSON-RPC error |
+| `http_error: true` | HTTP status ≥ 400 (a JSON-RPC error with HTTP 200 does not count) |
+| `canary_received_contains: [s]` | some request body the canary got during this step contains `s` |
 | `canary_called: [tool]` | the tool was invoked during this step |
 | `canary_not_called: [tool]` | the tool was not invoked during this step |
 | `canary_received_not_contains: [s]` | no request body or header the canary got during this step contains `s` |
@@ -63,4 +69,4 @@ Test-scoped tools must be named `asck_*`. The target contract grants them to `ad
 
 ## Pair every deny test with a control
 
-A target that blocks everything passes every deny test. Where a deny test could pass that way, add or reuse a control test proving that allowed traffic still works (see `ASCK-AUTHZ-003`, `ASCK-AUTHZ-005` and `ASCK-SCHEMA-005`).
+A target that blocks everything passes every deny test. Where a deny test could pass that way, add or reuse a control test proving that allowed traffic still works (see `ASCK-AUTHZ-003`, `ASCK-AUTHZ-005`, `ASCK-SCHEMA-005` and `ASCK-HEADER-003`). A deny step can also follow an allowed step in the same test, as in `ASCK-STATE-002`.

@@ -36,6 +36,13 @@ Configure your policy so that:
 | `reader` | `search_docs`; `read_file` only with a `path` matching `docs/*` |
 | `admin` | every tool, including test-scoped `asck_*` tools |
 
+Two kinds of test-scoped tool behave in ways the contract fixes:
+
+- **Multi round-trip tools** (`ASCK-STATE-*`) answer a `tools/call` that has no `params.requestState` with `{"resultType": "input_required", "requestState": "<state>"}`. Any retry that carries a state completes. The canary deliberately trusts whatever state comes back, so the system under test must protect it: accept only state it issued, unaltered, for the same caller and request, and only once. Upstream must receive the exact state the canary issued. Sealing the state (for example, with a MAC over the caller, the target and a nonce) is one way to do this.
+- **Header-annotated tools** (`ASCK-HEADER-*`) mark arguments with `x-mcp-header`, per [SEP-2243](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/seps/2243-http-standardization.md).
+
+The header tests send `MCP-Protocol-Version: 2026-07-28` on individual steps, with `Mcp-Method`, `Mcp-Name` and `Mcp-Param-*` headers. A target that processes the body must reject a mismatch with an HTTP error status. Every other test still sends `2025-06-18`.
+
 The `docs/*` limit is what the argument-authorization test (`ASCK-AUTHZ-004`) checks. It sends `/etc/passwd`, `secrets/prod.env` and `docs/../secrets/prod.env` as reader, and expects all three to be blocked, while `docs/handbook.md` must still work (`ASCK-AUTHZ-005`).
 
 ## 3. Target profile
@@ -73,5 +80,7 @@ The canary and the tests use fake credentials that match common detector formats
 | `${canary.github_token}` | `ghp_ASCKcanaryTOKEN0000000000000000000001` |
 | `${canary.email}` | `canary.user@asck.invalid` |
 | `${canary.injection_marker}` | `ASCK-INJECTION-7f3a` |
+| `${canary.request_state}` | `eyJhc2NrIjoic3RhdGUiLCJzY29wZSI6InJlYWQifQ` (state the canary issues) |
+| `${canary.forged_state}` | `eyJhc2NrIjoic3RhdGUiLCJzY29wZSI6ImFkbWluIn0` (same, scope escalated) |
 
 Allow-list these values if your secret scanners flag the repository.

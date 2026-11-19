@@ -42,11 +42,18 @@ type Config struct {
 		ScreenInjection bool     `json:"screen_injection"`
 		PinTools        bool     `json:"pin_tools"`
 		ValidateSchemas bool     `json:"validate_schemas"`
+		// ValidateMirroredHeaders enforces SEP-2243 header mirroring.
+		ValidateMirroredHeaders bool `json:"validate_mirrored_headers"`
+		// SealRequestState seals upstream requestState; the MAC key comes
+		// from StateKeyEnv, or is random per process if that is unset.
+		SealRequestState bool   `json:"seal_request_state"`
+		StateKeyEnv      string `json:"state_key_env"`
 	} `json:"hardening"`
 
 	// Resolved values.
 	UpstreamURL        *url.URL `json:"-"`
 	UpstreamAuthHeader string   `json:"-"`
+	StateKey           []byte   `json:"-"`
 }
 
 func Load(path string) (*Config, error) {
@@ -78,6 +85,13 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("%s must be at least 32 bytes", c.Auth.JWTSecretEnv)
 		}
 		c.Auth.JWTSecret = []byte(s)
+	}
+	if c.Hardening.StateKeyEnv != "" {
+		k := os.Getenv(c.Hardening.StateKeyEnv)
+		if len(k) > 0 && len(k) < 32 {
+			return nil, fmt.Errorf("%s must be at least 32 bytes", c.Hardening.StateKeyEnv)
+		}
+		c.StateKey = []byte(k)
 	}
 	if len(c.Auth.JWTSecret) == 0 && len(c.Auth.APIKeys) == 0 {
 		return nil, errors.New("no authentication configured: set auth.jwt_secret_env or auth.api_keys")

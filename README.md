@@ -51,11 +51,13 @@ The command exits 1 if any test fails, so it can gate CI.
 | Limits | oversized payload rejected | 10.4.5 |
 | Schema validation | unrecognized, mistyped, missing and oversized arguments rejected; results checked against `outputSchema` (with control) | 10.4.1, 10.4.3, 10.4.4, 9.3.2 |
 | Schema safety | remote `$ref` never fetched and treated as invalid; pathologically deep schemas bounded | 10.4.13, 10.4.14, 10.4.15 |
+| Request state | forged, tampered and transplanted `requestState` rejected; replay refused (with control) | 10.2.8, 10.2.10 |
+| Mirrored headers | `Mcp-Method`, `Mcp-Name` and `Mcp-Param-*` must match the body under 2026-07-28 (with control); not trusted under older versions; tools with invalid `x-mcp-header` annotations dropped individually | 10.3.6, 10.4.11, 10.4.12 |
 | Secrets | credentials in tool results and tool arguments do not cross the boundary | 9.5.4 |
 | Injection | hidden instructions in tool results and tool descriptions screened | 10.4.2 |
 | Rug pull | a tool whose definition changes after approval cannot be called | 10.4.8 |
 
-Run `bin/asck list` for the full list. These tests cover 19 of the 76 active C9/C10 requirements. The report's coverage map shows every requirement as pass, fail, skipped or not covered.
+Run `bin/asck list` for the full list. These tests cover 24 of the 76 active C9/C10 requirements. The report's coverage map shows every requirement as pass, fail, skipped or not covered.
 
 **What "pass" means.** A requirement passes when every test mapped to it passes. The tests check specific, observable behaviour. A pass is evidence, not certification, and a requirement can have aspects no test covers yet.
 

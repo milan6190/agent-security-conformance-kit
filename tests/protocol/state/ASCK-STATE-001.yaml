@@ -1,0 +1,47 @@
+id: ASCK-STATE-001
+title: Forged, tampered or transplanted requestState is rejected
+aisvs: ["10.2.8"]
+risks: [MCP02, ASI03]
+level: 1
+requires: [principal:admin, principal:reader]
+rationale: >
+  In a multi round-trip request the server hands the client an opaque
+  requestState and trusts it on the retry. The canary's state names a scope,
+  and the canary honours whatever state it gets back, like a server that
+  trusts its state blindly. The system under test must make sure only state
+  it issued, unaltered, for this caller and this request, gets through.
+canary:
+  tools:
+    - name: asck_approval
+      description: Apply a change after approval.
+      input_required: true
+      input_schema:
+        type: object
+        properties: {change: {type: string, maxLength: 64}}
+        required: [change]
+        additionalProperties: false
+steps:
+  - name: admin starts a multi round-trip request
+    as: admin
+    rpc: {method: tools/call, params: {name: asck_approval, arguments: {change: c-1}}}
+    expect:
+      allowed: true
+      response_contains: ['"input_required"']
+  - name: retry with a state the client wrote itself (scope escalated)
+    as: admin
+    rpc: {method: tools/call, params: {name: asck_approval, arguments: {change: c-1}, requestState: "${canary.forged_state}"}}
+    expect:
+      blocked: true
+      canary_not_called: [asck_approval]
+  - name: retry with the issued state altered by one character
+    as: admin
+    rpc: {method: tools/call, params: {name: asck_approval, arguments: {change: c-1}, requestState: "${state.tampered}"}}
+    expect:
+      blocked: true
+      canary_not_called: [asck_approval]
+  - name: another caller replays the state on a different tool
+    as: reader
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}, requestState: "${state.last}"}}
+    expect:
+      blocked: true
+      canary_not_called: [search_docs]

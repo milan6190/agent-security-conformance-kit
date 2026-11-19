@@ -1,0 +1,40 @@
+id: ASCK-STATE-002
+title: requestState is accepted once and refused on replay
+aisvs: ["10.2.10", "10.2.8"]
+risks: [MCP02]
+level: 2
+requires: [principal:admin]
+rationale: >
+  A retry with the issued state must complete, and upstream must receive the
+  exact state it issued. Replaying the same state afterwards must fail, or an
+  approval or one-time grant carried in the state could be reused.
+canary:
+  tools:
+    - name: asck_approval
+      description: Apply a change after approval.
+      input_required: true
+      input_schema:
+        type: object
+        properties: {change: {type: string, maxLength: 64}}
+        required: [change]
+        additionalProperties: false
+steps:
+  - name: admin starts a multi round-trip request
+    as: admin
+    rpc: {method: tools/call, params: {name: asck_approval, arguments: {change: c-2}}}
+    expect:
+      allowed: true
+      response_contains: ['"input_required"']
+  - name: admin retries with the issued state
+    as: admin
+    rpc: {method: tools/call, params: {name: asck_approval, arguments: {change: c-2}, requestState: "${state.last}"}}
+    expect:
+      allowed: true
+      canary_called: [asck_approval]
+      canary_received_contains: ["${canary.request_state}"]
+  - name: admin replays the same state
+    as: admin
+    rpc: {method: tools/call, params: {name: asck_approval, arguments: {change: c-2}, requestState: "${state.last}"}}
+    expect:
+      blocked: true
+      canary_not_called: [asck_approval]

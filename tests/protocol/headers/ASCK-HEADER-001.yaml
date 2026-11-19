@@ -1,0 +1,45 @@
+id: ASCK-HEADER-001
+title: Mirrored Mcp-Method and Mcp-Name headers that contradict the body are rejected
+aisvs: ["10.4.12"]
+risks: [MCP02]
+level: 2
+requires: [principal:reader]
+rationale: >
+  From protocol 2026-07-28 (SEP-2243), clients mirror the method and tool
+  name into headers so load balancers and gateways can act without parsing
+  the body. If headers and body may disagree, a component that reads one can
+  be steered while another executes the other. Anything that processes the
+  body must reject a mismatch with an HTTP error. ASCK-HEADER-003 is the control.
+steps:
+  - name: Mcp-Name names a different tool than the body
+    as: reader
+    mirror_headers: true
+    headers: {Mcp-Name: delete_repo}
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}}}
+    expect:
+      http_error: true
+      canary_not_called: [search_docs, delete_repo]
+  - name: Mcp-Method names a different method than the body
+    as: reader
+    mirror_headers: true
+    headers: {Mcp-Method: prompts/get}
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}}}
+    expect:
+      http_error: true
+      canary_not_called: [search_docs]
+  - name: required Mcp-Method header is missing
+    as: reader
+    mirror_headers: true
+    omit_headers: [Mcp-Method]
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}}}
+    expect:
+      http_error: true
+      canary_not_called: [search_docs]
+  - name: method value differs only in case (values are case-sensitive)
+    as: reader
+    mirror_headers: true
+    headers: {Mcp-Method: TOOLS/CALL}
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}}}
+    expect:
+      http_error: true
+      canary_not_called: [search_docs]

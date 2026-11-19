@@ -23,9 +23,18 @@ import (
 // JSON-RPC error codes used by the gateway.
 const (
 	codeParseError = -32700
-	codeForbidden  = -32001
-	codeBadResult  = -32002
+	// Implementation-defined codes (-32000 to -32019 in the 2026-07-28
+	// schema). -32001 is avoided: SEP-2243 drafts used it for HeaderMismatch.
+	codeForbidden = -32003
+	codeBadResult = -32004
 )
+
+// callInfo records an allowed capability request until its response
+// returns, so the response can be checked against what was asked for.
+type callInfo struct {
+	target    string         // "tool:<name>", "resource:<uri>" or "prompt:<name>"
+	outSchema map[string]any // tools only: declared outputSchema
+}
 
 // Methods that are always permitted once a caller is authenticated.
 // Capability-bearing methods (tools/call, resources/read, prompts/get)
@@ -71,6 +80,19 @@ type Options struct {
 	// Schemas with external or unresolved $ref, or beyond size limits, are
 	// refused (10.4.13, 10.4.14, 10.4.15).
 	ValidateSchemas bool
+	// ValidateMirroredHeaders enforces SEP-2243 header mirroring. For
+	// protocol 2026-07-28 and later, Mcp-Method, Mcp-Name and Mcp-Param-*
+	// must match the body or the request is refused with 400 (AISVS
+	// 10.4.12). For earlier versions the headers are unvalidated, so they are
+	// stripped and never trusted (10.3.6). Tools with invalid x-mcp-header
+	// annotations are dropped from tools/list and refused (10.4.11).
+	ValidateMirroredHeaders bool
+	// SealRequestState wraps upstream requestState in a MAC bound to the
+	// caller, target, a nonce and an expiry, and accepts each sealed state
+	// once (AISVS 10.2.8, 10.2.10). StateKey is the MAC key; a random key is
+	// used if it is empty.
+	SealRequestState bool
+	StateKey         []byte
 }
 
 // Gateway is an http.Handler that guards one upstream MCP server.
@@ -79,6 +101,7 @@ type Gateway struct {
 	limiter *limiter
 	Metrics *Metrics
 	pins    *pinStore
+	states  *stateSealer
 }
 
 func New(opt Options) *Gateway {
@@ -91,7 +114,7 @@ func New(opt Options) *Gateway {
 	if opt.Client == nil {
 		opt.Client = &http.Client{} // no timeout: SSE streams are long-lived
 	}
-	return &Gateway{opt: opt, limiter: newLimiter(opt.RatePerMinute), Metrics: &Metrics{}, pins: newPinStore()}
+	return &Gateway{opt: opt, limiter: newLimiter(opt.RatePerMinute), Metrics: &Metrics{}, pins: newPinStore(), states: newStateSealer(opt.StateKey, 0)}
 }
 
 type msg = map[string]any
@@ -145,13 +168,42 @@ func (g *Gateway) handlePost(w http.ResponseWriter, r *http.Request, p *auth.Pri
 		return
 	}
 
+	mirrored := g.opt.ValidateMirroredHeaders && mirroredVersion(r)
+	if g.opt.ValidateMirroredHeaders && !mirrored {
+		stripMirrored(r)
+	}
+	if mirrored {
+		reason := ""
+		if batch {
+			reason = "batch requests cannot carry mirrored headers"
+		} else {
+			reason = checkStandardHeaders(r, msgs[0])
+		}
+		if reason != "" {
+			g.rejectHeaders(w, p, msgs[0], reason)
+			return
+		}
+	}
+
 	var denials []msg
 	deniedAny := false
-	outSchemas := map[string]map[string]any{} // rpc id -> outputSchema
+	calls := map[string]*callInfo{} // rpc id -> allowed capability request
 	for _, m := range msgs {
 		dec, kind, target := g.authorize(p, m)
-		if dec.Allowed && kind == policy.Tool && (g.opt.PinTools || g.opt.ValidateSchemas) {
-			dec = g.checkTool(r, m, target, outSchemas)
+		info := &callInfo{target: string(kind) + ":" + target}
+		if dec.Allowed && kind != "" && g.opt.SealRequestState {
+			dec = g.openState(p, m, info.target)
+		}
+		if dec.Allowed && kind == policy.Tool && (g.opt.PinTools || g.opt.ValidateSchemas || g.opt.ValidateMirroredHeaders) {
+			var headerErr string
+			dec, headerErr = g.checkTool(r, m, target, info, mirrored)
+			if headerErr != "" {
+				g.rejectHeaders(w, p, m, headerErr)
+				return
+			}
+		}
+		if id, ok := m["id"]; ok && dec.Allowed && kind != "" {
+			calls[fmt.Sprint(id)] = info
 		}
 		counts := redact.Counts{}
 		if dec.Allowed && g.opt.RedactRequests {
@@ -187,44 +239,79 @@ func (g *Gateway) handlePost(w http.ResponseWriter, r *http.Request, p *auth.Pri
 	} else {
 		out, _ = json.Marshal(msgs[0])
 	}
-	g.forward(w, r, p, out, outSchemas)
+	g.forward(w, r, p, out, calls)
 }
 
 // checkTool runs the definition-dependent checks for one tools/call: the
-// pin (10.4.8) and argument validation (10.4.3, 10.4.4). It records the
-// tool's outputSchema so the result can be validated on the way back.
-func (g *Gateway) checkTool(r *http.Request, m msg, name string, outSchemas map[string]map[string]any) policy.Decision {
+// pin (10.4.8), x-mcp-header annotations (10.4.11), mirrored Mcp-Param-*
+// headers (10.4.12) and argument validation (10.4.3, 10.4.4). It records
+// the tool's outputSchema so the result can be validated on the way back.
+// A non-empty headerErr means the request must be refused with 400.
+func (g *Gateway) checkTool(r *http.Request, m msg, name string, info *callInfo, mirrored bool) (dec policy.Decision, headerErr string) {
 	def, reason := g.fetchTool(r, name)
 	if reason != "" {
-		return policy.Decision{Allowed: false, Reason: reason}
+		return policy.Decision{Allowed: false, Reason: reason}, ""
 	}
 	if g.opt.PinTools && !g.pins.observe(name, toolHash(def)) {
-		return policy.Decision{Allowed: false, Reason: "tool definition changed since it was approved; re-approval required"}
-	}
-	if !g.opt.ValidateSchemas {
-		return policy.Decision{Allowed: true, Reason: "allowed"}
+		return policy.Decision{Allowed: false, Reason: "tool definition changed since it was approved; re-approval required"}, ""
 	}
 	in, _ := def["inputSchema"].(map[string]any)
-	if in == nil {
-		return policy.Decision{Allowed: false, Reason: "tool declares no inputSchema"}
-	}
 	params, _ := m["params"].(map[string]any)
+	if g.opt.ValidateMirroredHeaders {
+		if _, err := headerAnnotations(in); err != nil {
+			return policy.Decision{Allowed: false, Reason: "tool definition rejected: " + err.Error()}, ""
+		}
+	}
+	if mirrored {
+		args, _ := params["arguments"].(map[string]any)
+		if reason := checkParamHeaders(r, "tools/call", in, args); reason != "" {
+			return policy.Decision{}, reason
+		}
+	}
+	if !g.opt.ValidateSchemas {
+		return policy.Decision{Allowed: true, Reason: "allowed"}, ""
+	}
+	if in == nil {
+		return policy.Decision{Allowed: false, Reason: "tool declares no inputSchema"}, ""
+	}
 	args, ok := params["arguments"]
 	if !ok {
 		args = map[string]any{}
 	}
 	if err := schema.Validate(in, args, schema.DefaultLimits); err != nil {
-		return policy.Decision{Allowed: false, Reason: "arguments rejected: " + err.Error()}
+		return policy.Decision{Allowed: false, Reason: "arguments rejected: " + err.Error()}, ""
 	}
 	if out, ok := def["outputSchema"].(map[string]any); ok {
 		if err := schema.Check(out, schema.DefaultLimits); err != nil {
-			return policy.Decision{Allowed: false, Reason: "output schema rejected: " + err.Error()}
+			return policy.Decision{Allowed: false, Reason: "output schema rejected: " + err.Error()}, ""
 		}
-		if id, ok := m["id"]; ok {
-			outSchemas[fmt.Sprint(id)] = out
-		}
+		info.outSchema = out
 	}
+	return policy.Decision{Allowed: true, Reason: "allowed"}, ""
+}
+
+// openState verifies and consumes a sealed requestState on a retried
+// request, replacing it with the upstream state it carries.
+func (g *Gateway) openState(p *auth.Principal, m msg, target string) policy.Decision {
+	params, _ := m["params"].(map[string]any)
+	raw, ok := params["requestState"]
+	if !ok {
+		return policy.Decision{Allowed: true, Reason: "allowed"}
+	}
+	tok, _ := raw.(string)
+	upstream, err := g.states.open(tok, p.Subject, target)
+	if err != nil {
+		return policy.Decision{Allowed: false, Reason: err.Error()}
+	}
+	params["requestState"] = upstream
 	return policy.Decision{Allowed: true, Reason: "allowed"}
+}
+
+// rejectHeaders refuses a request whose mirrored headers fail validation.
+func (g *Gateway) rejectHeaders(w http.ResponseWriter, p *auth.Principal, m msg, reason string) {
+	g.Metrics.Denied.Add(1)
+	g.audit(p, m, "", "", policy.Decision{Allowed: false, Reason: "header mismatch: " + reason}, redact.Counts{}, "request")
+	writeJSON(w, http.StatusBadRequest, rpcError(m["id"], codeHeaderMismatch, "Header mismatch: "+reason))
 }
 
 // authorize returns the policy decision for a single client->server message.
@@ -267,17 +354,24 @@ func (g *Gateway) redactRequest(m msg, c redact.Counts) {
 }
 
 // processResponse filters list results by policy and redacts payloads.
-func (g *Gateway) processResponse(p *auth.Principal, m msg, outSchemas map[string]map[string]any) {
-	if out, ok := outSchemas[fmt.Sprint(m["id"])]; ok {
-		if reason := checkResult(m, out); reason != "" {
+func (g *Gateway) processResponse(p *auth.Principal, m msg, calls map[string]*callInfo) {
+	info := calls[fmt.Sprint(m["id"])]
+	if info != nil && info.outSchema != nil {
+		if reason := checkResult(m, info.outSchema); reason != "" {
 			g.opt.Logger.Warn("tool_result_rejected", "subject", p.Subject, "reason", reason)
 			delete(m, "result")
 			m["error"] = map[string]any{"code": codeBadResult, "message": "Tool result rejected by MCP Guard: " + reason}
 		}
 	}
 	if res, ok := m["result"].(map[string]any); ok {
+		if st, ok := res["requestState"].(string); ok && info != nil && g.opt.SealRequestState {
+			res["requestState"] = g.states.seal(p.Subject, info.target, st)
+		}
 		if g.opt.PinTools {
 			g.dropChangedTools(res)
+		}
+		if g.opt.ValidateMirroredHeaders {
+			g.dropBadAnnotations(res)
 		}
 		g.filterList(p, res, "tools", "name", policy.Tool)
 		g.filterList(p, res, "resources", "uri", policy.Resource)
@@ -343,7 +437,7 @@ func checkResult(m msg, out map[string]any) string {
 	return ""
 }
 
-func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, p *auth.Principal, body []byte, outSchemas map[string]map[string]any) {
+func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, p *auth.Principal, body []byte, calls map[string]*callInfo) {
 	var rd io.Reader
 	if body != nil {
 		rd = bytes.NewReader(body)
@@ -356,6 +450,14 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, p *auth.Princi
 	for _, h := range forwardHeaders {
 		if v := r.Header.Get(h); v != "" {
 			req.Header.Set(h, v)
+		}
+	}
+	// Mirrored headers go upstream only once they have been validated.
+	if g.opt.ValidateMirroredHeaders && mirroredVersion(r) && body != nil {
+		for k, vs := range r.Header {
+			if strings.EqualFold(k, "Mcp-Method") || strings.EqualFold(k, "Mcp-Name") || hasParamPrefix(k) {
+				req.Header[k] = vs
+			}
 		}
 	}
 	// Client credentials are never passed through to the upstream server.
@@ -386,7 +488,7 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, p *auth.Princi
 	switch {
 	case strings.HasPrefix(ct, "text/event-stream"):
 		w.WriteHeader(resp.StatusCode)
-		g.streamSSE(w, resp.Body, p, outSchemas)
+		g.streamSSE(w, resp.Body, p, calls)
 	case strings.HasPrefix(ct, "application/json"):
 		raw, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -394,14 +496,14 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, p *auth.Princi
 			return
 		}
 		w.WriteHeader(resp.StatusCode)
-		w.Write(g.rewriteJSON(p, raw, outSchemas))
+		w.Write(g.rewriteJSON(p, raw, calls))
 	default:
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
 	}
 }
 
-func (g *Gateway) rewriteJSON(p *auth.Principal, raw []byte, outSchemas map[string]map[string]any) []byte {
+func (g *Gateway) rewriteJSON(p *auth.Principal, raw []byte, calls map[string]*callInfo) []byte {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return raw
 	}
@@ -414,7 +516,7 @@ func (g *Gateway) rewriteJSON(p *auth.Principal, raw []byte, outSchemas map[stri
 		return raw
 	}
 	for _, m := range msgs {
-		g.processResponse(p, m, outSchemas)
+		g.processResponse(p, m, calls)
 	}
 	var out []byte
 	if batch {
@@ -427,7 +529,7 @@ func (g *Gateway) rewriteJSON(p *auth.Principal, raw []byte, outSchemas map[stri
 
 // streamSSE rewrites each SSE event's data payload while preserving
 // event ids (for resumability) and flushing per event.
-func (g *Gateway) streamSSE(w http.ResponseWriter, body io.Reader, p *auth.Principal, outSchemas map[string]map[string]any) {
+func (g *Gateway) streamSSE(w http.ResponseWriter, body io.Reader, p *auth.Principal, calls map[string]*callInfo) {
 	fl, _ := w.(http.Flusher)
 	br := bufio.NewReaderSize(body, 64*1024)
 	var fields []string
@@ -441,7 +543,7 @@ func (g *Gateway) streamSSE(w http.ResponseWriter, body io.Reader, p *auth.Princ
 			b.WriteString(f + "\n")
 		}
 		if len(data) > 0 {
-			payload := g.rewriteJSON(p, []byte(strings.Join(data, "\n")), outSchemas)
+			payload := g.rewriteJSON(p, []byte(strings.Join(data, "\n")), calls)
 			for _, line := range strings.Split(string(payload), "\n") {
 				b.WriteString("data: " + line + "\n")
 			}

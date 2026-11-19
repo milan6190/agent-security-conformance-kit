@@ -22,6 +22,16 @@ const (
 	InjectionMarker   = "ASCK-INJECTION-7f3a"
 )
 
+// RequestState is the opaque requestState the canary issues in an
+// input_required result: base64url of {"asck":"state","scope":"read"}.
+// ForgedRequestState is what a client would send to escalate it:
+// base64url of {"asck":"state","scope":"admin"}. The canary, like a server
+// that trusts its state blindly, completes any retry that carries a state.
+const (
+	RequestState       = "eyJhc2NrIjoic3RhdGUiLCJzY29wZSI6InJlYWQifQ"
+	ForgedRequestState = "eyJhc2NrIjoic3RhdGUiLCJzY29wZSI6ImFkbWluIn0"
+)
+
 // MaxArgLength is the maxLength declared for every default tool argument.
 const MaxArgLength = 4096
 
@@ -31,6 +41,9 @@ type Tool struct {
 	Description  string         `json:"description"`
 	InputSchema  map[string]any `json:"inputSchema"`
 	OutputSchema map[string]any `json:"outputSchema,omitempty"`
+	// InputRequired makes a tools/call without params.requestState return
+	// an input_required result carrying RequestState (multi round-trip).
+	InputRequired bool `json:"-"`
 }
 
 // DefaultTools is the fixed catalog the target contract refers to
@@ -150,6 +163,13 @@ func (s *Server) PatchTool(name, description string, inputSchema map[string]any)
 	}
 }
 
+// Tools returns a copy of the current tool catalog.
+func (s *Server) Tools() []Tool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Tool(nil), s.tools...)
+}
+
 // Calls returns a copy of the call log.
 func (s *Server) Calls() []Call {
 	s.mu.Lock()
@@ -215,12 +235,15 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(body, &msg)
 
 	call := Call{Method: msg.Method, Params: msg.Params, Auth: r.Header.Get("Authorization"), Headers: r.Header.Clone(), Raw: string(body)}
+	var requestState string
 	if msg.Method == "tools/call" {
 		var p struct {
-			Name string `json:"name"`
+			Name         string `json:"name"`
+			RequestState string `json:"requestState"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
 		call.Tool = p.Name
+		requestState = p.RequestState
 	}
 	s.mu.Lock()
 	s.calls = append(s.calls, call)
@@ -246,6 +269,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	case "tools/list":
 		res = map[string]any{"tools": tools}
 	case "tools/call":
+		if needsInput(tools, call.Tool) && requestState == "" {
+			res = map[string]any{"resultType": "input_required", "requestState": RequestState}
+			break
+		}
 		if !hasResult {
 			result = "ok: " + call.Tool + " executed"
 			if hasStructured {
@@ -265,6 +292,15 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": res})
 }
 
+func needsInput(tools []Tool, name string) bool {
+	for _, t := range tools {
+		if t.Name == name {
+			return t.InputRequired
+		}
+	}
+	return false
+}
+
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
@@ -277,5 +313,7 @@ func Expand(s string) string {
 		"${canary.github_token}", SecretGitHubToken,
 		"${canary.email}", SecretEmail,
 		"${canary.injection_marker}", InjectionMarker,
+		"${canary.request_state}", RequestState,
+		"${canary.forged_state}", ForgedRequestState,
 	).Replace(s)
 }

@@ -1,0 +1,54 @@
+id: ASCK-HEADER-002
+title: Mcp-Param headers that contradict, omit or mis-encode argument values are rejected
+aisvs: ["10.4.12"]
+risks: [MCP02]
+level: 2
+requires: [principal:admin]
+rationale: >
+  asck_tenant_report marks its tenant argument with x-mcp-header, so a
+  client must send Mcp-Param-Tenant. Tenant headers are exactly what
+  intermediaries route and rate-limit on, so the value must be checked
+  against the body after decoding. ASCK-HEADER-003 is the control.
+canary:
+  tools:
+    - name: asck_tenant_report
+      description: Build a usage report for one tenant.
+      input_schema:
+        type: object
+        properties:
+          tenant: {type: string, maxLength: 64, x-mcp-header: Tenant}
+        required: [tenant]
+        additionalProperties: false
+steps:
+  - name: header names a different tenant than the body
+    as: admin
+    mirror_headers: true
+    headers: {Mcp-Param-Tenant: globex}
+    rpc: {method: tools/call, params: {name: asck_tenant_report, arguments: {tenant: acme}}}
+    expect:
+      http_error: true
+      canary_not_called: [asck_tenant_report]
+  - name: header is missing although the body has a value
+    as: admin
+    mirror_headers: true
+    omit_headers: [Mcp-Param-Tenant]
+    rpc: {method: tools/call, params: {name: asck_tenant_report, arguments: {tenant: acme}}}
+    expect:
+      http_error: true
+      canary_not_called: [asck_tenant_report]
+  - name: Base64 value with invalid padding
+    as: admin
+    mirror_headers: true
+    headers: {Mcp-Param-Tenant: "=?base64?YWNtZQ?="}
+    rpc: {method: tools/call, params: {name: asck_tenant_report, arguments: {tenant: acme}}}
+    expect:
+      http_error: true
+      canary_not_called: [asck_tenant_report]
+  - name: raw non-ASCII header value (must be Base64-encoded)
+    as: admin
+    mirror_headers: true
+    headers: {Mcp-Param-Tenant: "zürich"}
+    rpc: {method: tools/call, params: {name: asck_tenant_report, arguments: {tenant: "zürich"}}}
+    expect:
+      http_error: true
+      canary_not_called: [asck_tenant_report]

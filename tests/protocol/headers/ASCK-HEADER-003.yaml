@@ -1,0 +1,44 @@
+id: ASCK-HEADER-003
+title: Correctly mirrored headers are accepted (control)
+aisvs: ["10.4.12"]
+risks: []
+level: 2
+requires: [principal:reader, principal:admin]
+rationale: >
+  Control for ASCK-HEADER-001 and -002. A target that refuses every request
+  carrying mirrored headers, or every 2026-07-28 request, would pass the deny
+  tests; this proves conforming requests still work, including surrounding
+  whitespace (trimmed per HTTP) and Base64-encoded values.
+canary:
+  tools:
+    - name: asck_tenant_report
+      description: Build a usage report for one tenant.
+      input_schema:
+        type: object
+        properties:
+          tenant: {type: string, maxLength: 64, x-mcp-header: Tenant}
+        required: [tenant]
+        additionalProperties: false
+steps:
+  - name: standard headers mirrored correctly
+    as: reader
+    mirror_headers: true
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}}}
+    expect:
+      allowed: true
+      canary_called: [search_docs]
+  - name: Mcp-Name with surrounding whitespace
+    as: reader
+    mirror_headers: true
+    headers: {Mcp-Name: "  search_docs "}
+    rpc: {method: tools/call, params: {name: search_docs, arguments: {query: roadmap}}}
+    expect:
+      allowed: true
+      canary_called: [search_docs]
+  - name: non-ASCII argument mirrored as Base64
+    as: admin
+    mirror_headers: true
+    rpc: {method: tools/call, params: {name: asck_tenant_report, arguments: {tenant: "zürich"}}}
+    expect:
+      allowed: true
+      canary_called: [asck_tenant_report]

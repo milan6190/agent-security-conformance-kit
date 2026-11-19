@@ -25,6 +25,8 @@
     "allowed_hosts": ["127.0.0.1:8080", "localhost:8080"],
     "screen_injection": true,
     "pin_tools": true,
-    "validate_schemas": true
+    "validate_schemas": true,
+    "validate_mirrored_headers": true,
+    "seal_request_state": true
   }
 }

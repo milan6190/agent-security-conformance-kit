@@ -114,7 +114,7 @@ func TestToolCallDenied(t *testing.T) {
 	gw := newGW(t, up.URL)
 	for _, tool := range []string{"delete_repo", "db.drop_table"} {
 		_, body := call(t, gw, token("analyst"), `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"`+tool+`"}}`)
-		if !strings.Contains(body, `"code":-32001`) || !strings.Contains(body, `"id":7`) {
+		if !strings.Contains(body, `"code":-32003`) || !strings.Contains(body, `"id":7`) {
 			t.Fatalf("%s: expected forbidden error, got %s", tool, body)
 		}
 	}
@@ -138,7 +138,7 @@ func TestBatchWithOneDeniedRejectsAll(t *testing.T) {
 	_, body := call(t, newGW(t, up.URL), token("analyst"),
 		`[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_docs"}},
 		  {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delete_repo"}}]`)
-	if strings.Contains(body, "result") || !strings.Contains(body, "-32001") {
+	if strings.Contains(body, "result") || !strings.Contains(body, "-32003") {
 		t.Fatalf("got %s", body)
 	}
 }

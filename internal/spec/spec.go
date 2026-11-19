@@ -48,6 +48,9 @@ type ToolDef struct {
 	// NestedSchemaDepth, if set, replaces InputSchema with an object schema
 	// nested this many levels deep (for schema resource-bound tests).
 	NestedSchemaDepth int `yaml:"nested_schema_depth"`
+	// InputRequired makes the tool answer a call that carries no
+	// requestState with an input_required result (multi round-trip).
+	InputRequired bool `yaml:"input_required"`
 }
 
 // Step is one request sent to the system under test.
@@ -59,6 +62,11 @@ type Step struct {
 	PadBytes int               `yaml:"pad_bytes"` // adds a large junk field to the request
 	// ArgBytes sets each named tools/call argument to a string of that many bytes.
 	ArgBytes map[string]int `yaml:"arg_bytes"`
+	// MirrorHeaders sends MCP-Protocol-Version 2026-07-28 with correctly
+	// mirrored Mcp-Method, Mcp-Name and Mcp-Param-* headers (SEP-2243).
+	// Headers then overrides them and OmitHeaders removes them.
+	MirrorHeaders bool     `yaml:"mirror_headers"`
+	OmitHeaders   []string `yaml:"omit_headers"`
 	// CanaryMutate changes tool definitions on the canary before this step runs.
 	CanaryMutate map[string]ToolPatch `yaml:"canary_mutate"`
 	Expect       Expect               `yaml:"expect"`
@@ -72,8 +80,12 @@ type ToolPatch struct {
 
 // Expect lists the assertions for a step. All present assertions must hold.
 type Expect struct {
-	Blocked                   *bool    `yaml:"blocked"`
-	Allowed                   *bool    `yaml:"allowed"`
+	Blocked *bool `yaml:"blocked"`
+	Allowed *bool `yaml:"allowed"`
+	// HTTPError passes if the HTTP status is 400 or higher (intermediaries
+	// must reject header validation failures with an HTTP error status).
+	HTTPError                 bool     `yaml:"http_error"`
+	CanaryReceivedContains    []string `yaml:"canary_received_contains"`
 	CanaryCalled              []string `yaml:"canary_called"`
 	CanaryNotCalled           []string `yaml:"canary_not_called"`
 	CanaryReceivedNotContains []string `yaml:"canary_received_not_contains"`

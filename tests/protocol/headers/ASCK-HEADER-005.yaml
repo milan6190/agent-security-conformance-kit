@@ -1,0 +1,44 @@
+id: ASCK-HEADER-005
+title: Tools with invalid x-mcp-header annotations are excluded individually
+aisvs: ["10.4.11"]
+risks: [MCP03]
+level: 1
+requires: [principal:admin]
+rationale: >
+  An annotation with an invalid name, a duplicate name, a non-primitive type
+  or a nested position cannot be mirrored safely. The affected tool must be
+  dropped, while the rest of tools/list, including a correctly annotated
+  tool, stays available. The dropped tool must not be callable either.
+canary:
+  tools:
+    - name: asck_hdr_ok
+      input_schema: {type: object, properties: {region: {type: string, x-mcp-header: Region}}}
+    - name: asck_hdr_space
+      input_schema: {type: object, properties: {region: {type: string, x-mcp-header: "My Region"}}}
+    - name: asck_hdr_dup
+      input_schema:
+        type: object
+        properties:
+          a: {type: string, x-mcp-header: Region}
+          b: {type: string, x-mcp-header: REGION}
+    - name: asck_hdr_object
+      input_schema: {type: object, properties: {filter: {type: object, x-mcp-header: Filter}}}
+    - name: asck_hdr_nested
+      input_schema:
+        type: object
+        properties:
+          outer: {type: object, properties: {region: {type: string, x-mcp-header: Region}}}
+steps:
+  - name: admin lists tools
+    as: admin
+    rpc: {method: tools/list}
+    expect:
+      allowed: true
+      tools_list_includes: [search_docs, asck_hdr_ok]
+      tools_list_excludes: [asck_hdr_space, asck_hdr_dup, asck_hdr_object, asck_hdr_nested]
+  - name: admin calls a tool with an invalid annotation
+    as: admin
+    rpc: {method: tools/call, params: {name: asck_hdr_space, arguments: {region: eu}}}
+    expect:
+      blocked: true
+      canary_not_called: [asck_hdr_space]

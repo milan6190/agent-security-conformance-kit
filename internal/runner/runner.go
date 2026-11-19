@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/OWASP/www-project-agentic-security-conformance-kit/internal/canary"
 	"github.com/OWASP/www-project-agentic-security-conformance-kit/internal/spec"
@@ -57,6 +58,8 @@ type Runner struct {
 	Canary *canary.Server
 	Client *http.Client
 	now    func() time.Time
+	// state is the last requestState the client received in this test.
+	state string
 }
 
 // New builds a runner. The canary must already be started at Target.CanaryListen.
@@ -84,6 +87,7 @@ func (r *Runner) Run(t spec.Test) TestResult {
 		return res
 	}
 	r.Canary.Reset()
+	r.state = ""
 	for _, d := range t.Canary.Tools {
 		r.Canary.AddTool(r.toolDef(d))
 	}
@@ -117,6 +121,9 @@ func (r *Runner) Run(t spec.Test) TestResult {
 		if err != nil {
 			res.Status, res.Reason = Error, fmt.Sprintf("%s: %v", name, err)
 			return res
+		}
+		if s := resp.requestState(); s != "" {
+			r.state = s
 		}
 		delta := r.Canary.Calls()[before:]
 		sr := StepResult{Name: name, HTTPStatus: resp.status, Failures: check(st.Expect, resp, delta, hdr)}
@@ -260,12 +267,20 @@ func (r *Runner) send(st spec.Step, id int, hdr map[string]string, session strin
 		return nil, err
 	}
 	setHeaders(req, hdr, session)
+	if st.MirrorHeaders {
+		for k, v := range r.mirrored(msg) {
+			req.Header.Set(k, v)
+		}
+	}
 	for k, v := range st.Headers {
 		if strings.EqualFold(k, "Host") {
 			req.Host = r.expand(v) // net/http ignores a Host entry in Header
 			continue
 		}
 		req.Header.Set(k, r.expand(v))
+	}
+	for _, k := range st.OmitHeaders {
+		req.Header.Del(k)
 	}
 	resp, err := r.Client.Do(req)
 	if err != nil {
@@ -328,6 +343,16 @@ func (resp *response) rpcError() bool {
 	return false
 }
 
+func (resp *response) requestState() string {
+	for _, m := range resp.msgs {
+		res, _ := m["result"].(map[string]any)
+		if s, ok := res["requestState"].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
 func (resp *response) toolNames() ([]string, bool) {
 	var names []string
 	found := false
@@ -355,6 +380,9 @@ func check(e spec.Expect, resp *response, delta []canary.Call, hdr map[string]st
 	if e.Blocked != nil && *e.Blocked != blocked {
 		f = append(f, fmt.Sprintf("expected blocked=%v, got HTTP %d, rpc error=%v", *e.Blocked, resp.status, resp.rpcError()))
 	}
+	if e.HTTPError && resp.status < 400 {
+		f = append(f, fmt.Sprintf("expected an HTTP error status, got HTTP %d", resp.status))
+	}
 	if e.Allowed != nil && *e.Allowed == blocked {
 		f = append(f, fmt.Sprintf("expected allowed=%v, got HTTP %d, rpc error=%v", *e.Allowed, resp.status, resp.rpcError()))
 	}
@@ -372,6 +400,19 @@ func check(e spec.Expect, resp *response, delta []canary.Call, hdr map[string]st
 	for _, t := range e.CanaryNotCalled {
 		if called[t] {
 			f = append(f, "canary tool "+t+" was called but should have been blocked before reaching it")
+		}
+	}
+	for _, s := range e.CanaryReceivedContains {
+		s = canary.Expand(s)
+		found := false
+		for _, c := range delta {
+			if strings.Contains(c.Raw, s) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			f = append(f, fmt.Sprintf("canary did not receive %q", s))
 		}
 	}
 	for _, s := range e.CanaryReceivedNotContains {
@@ -447,9 +488,102 @@ func headerContains(h map[string][]string, s string) bool {
 }
 
 // expand replaces ${canary.*} placeholders, including ${canary.base_url},
-// the running canary's root URL.
+// the running canary's root URL, and ${state.last} / ${state.tampered}, the
+// last requestState the client received and a one-character alteration of it.
 func (r *Runner) expand(s string) string {
-	return strings.ReplaceAll(canary.Expand(s), "${canary.base_url}", r.Canary.BaseURL())
+	return strings.NewReplacer(
+		"${canary.base_url}", r.Canary.BaseURL(),
+		"${state.last}", r.state,
+		"${state.tampered}", tamper(r.state),
+	).Replace(canary.Expand(s))
+}
+
+// tamper changes one character in the middle of s.
+func tamper(s string) string {
+	if s == "" {
+		return "asck-tampered"
+	}
+	b := []byte(s)
+	i := len(b) / 2
+	if b[i] == 'A' {
+		b[i] = 'B'
+	} else {
+		b[i] = 'A'
+	}
+	return string(b)
+}
+
+// ProtocolMirrored is the first MCP revision that requires mirrored headers.
+const ProtocolMirrored = "2026-07-28"
+
+// mirrored computes the SEP-2243 headers a conforming client sends for msg.
+func (r *Runner) mirrored(msg map[string]any) map[string]string {
+	h := map[string]string{"MCP-Protocol-Version": ProtocolMirrored}
+	method, _ := msg["method"].(string)
+	h["Mcp-Method"] = method
+	params, _ := msg["params"].(map[string]any)
+	switch method {
+	case "tools/call", "prompts/get":
+		if n, ok := params["name"].(string); ok {
+			h["Mcp-Name"] = n
+		}
+	case "resources/read":
+		if u, ok := params["uri"].(string); ok {
+			h["Mcp-Name"] = u
+		}
+	}
+	if method != "tools/call" {
+		return h
+	}
+	name, _ := params["name"].(string)
+	args, _ := params["arguments"].(map[string]any)
+	for _, t := range r.Canary.Tools() {
+		if t.Name != name {
+			continue
+		}
+		props, _ := t.InputSchema["properties"].(map[string]any)
+		for prop, ps := range props {
+			hn, _ := ps.(map[string]any)["x-mcp-header"].(string)
+			v, ok := args[prop]
+			if hn == "" || !ok || v == nil {
+				continue
+			}
+			h["Mcp-Param-"+hn] = EncodeHeaderValue(v)
+		}
+	}
+	return h
+}
+
+// EncodeHeaderValue applies the SEP-2243 value encoding rules.
+func EncodeHeaderValue(v any) string {
+	switch t := v.(type) {
+	case bool:
+		if t {
+			return "true"
+		}
+		return "false"
+	case string:
+		if headerSafe(t) {
+			return t
+		}
+		return "=?base64?" + base64.StdEncoding.EncodeToString([]byte(t)) + "?="
+	}
+	return fmt.Sprint(v)
+}
+
+func headerSafe(s string) bool {
+	if !utf8.ValidString(s) || strings.HasPrefix(s, "=?base64?") && strings.HasSuffix(s, "?=") {
+		return false
+	}
+	if s != strings.Trim(s, " \t") {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c != ' ' && (c < 0x21 || c > 0x7e) {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Runner) expandAny(v any) any {
@@ -478,6 +612,7 @@ func (r *Runner) toolDef(d spec.ToolDef) canary.Tool {
 	if t.Description == "" {
 		t.Description = "Test-scoped tool."
 	}
+	t.InputRequired = d.InputRequired
 	t.InputSchema, _ = r.expandAny(d.InputSchema).(map[string]any)
 	t.OutputSchema, _ = r.expandAny(d.OutputSchema).(map[string]any)
 	if d.NestedSchemaDepth > 0 {

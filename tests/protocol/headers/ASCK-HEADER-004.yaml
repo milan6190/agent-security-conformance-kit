@@ -1,0 +1,27 @@
+id: ASCK-HEADER-004
+title: Mirrored headers are not trusted under a protocol version that does not validate them
+aisvs: ["10.3.6"]
+risks: [MCP02]
+level: 2
+requires: [principal:reader]
+rationale: >
+  Before 2026-07-28 nothing obliges a server to check mirrored headers
+  against the body. A component that enforces policy from those headers
+  without checking the protocol version can be told "search_docs" while the
+  body calls delete_repo. The call must be judged on the body, or refused.
+steps:
+  - name: legacy protocol version, Mcp-Name claims an allowed tool
+    as: reader
+    headers: {MCP-Protocol-Version: "2025-06-18", Mcp-Method: tools/call, Mcp-Name: search_docs}
+    rpc: {method: tools/call, params: {name: delete_repo, arguments: {repo: prod}}}
+    expect:
+      blocked: true
+      canary_not_called: [delete_repo]
+  - name: no protocol version header, Mcp-Name claims an allowed tool
+    as: reader
+    headers: {Mcp-Method: tools/call, Mcp-Name: search_docs}
+    omit_headers: [MCP-Protocol-Version]
+    rpc: {method: tools/call, params: {name: delete_repo, arguments: {repo: prod}}}
+    expect:
+      blocked: true
+      canary_not_called: [delete_repo]
